@@ -24,8 +24,15 @@ by bumping one pinned base tag.
 - python 3.12 (`python:3.12-slim-bookworm`) + Node 22 (NodeSource)
 - `git`, `tmux`, `gh`, `tini`, `gosu`, `jq` (+ `iptables`/`ipset` for the
   leaves' optional egress firewall)
-- **claude-code** (the agent the worker spawns) with first-run gates pre-seeded
-  (onboarding, bypass-mode prompt) so worker-spawned sessions start headless
+- the **agent CLIs** the worker can spawn — one image for all three:
+  - **claude-code** (`claude`) — the one the daemons drive today, with
+    first-run gates pre-seeded (onboarding, bypass-mode prompt) so
+    worker-spawned sessions start headless
+  - **codex** (`@openai/codex`) and **pi** (`@mariozechner/pi-coding-agent` —
+    *not* `@mariozechner/pi`, which ships a different tool) — binaries only for
+    now: auth is runtime env (`OPENAI_API_KEY` / provider keys), and their
+    headless first-run seeding is deferred until a leaf actually wires them
+    into a worker profile (`agents.yaml`)
 - the **alissa CLI** on the `alissa` user's PATH (worker, tmux queue, tasks)
 - non-root **`alissa` user (uid 1000)** + `/workspace` mount point, with the
   start-as-root → entrypoint chowns the volume → gosu-drop contract
@@ -76,9 +83,10 @@ Rules of the road:
   `ALISSA_API_TOKEN`, `CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_API_KEY`,
   `ALISSA_UI_PASSCODE`) are runtime env only; baked ARGs leak into
   `docker history`.
-- claude-code and the alissa CLI are deliberately **unpinned in the base
-  Dockerfile**: each base *release* snapshots whatever is current, so "bump
-  claude-code everywhere" = release a base, bump the pin per leaf.
+- The agent CLIs (claude-code, codex, pi) and the alissa CLI are deliberately
+  **unpinned in the base Dockerfile**: each base *release* snapshots whatever
+  is current, so "bump the agents everywhere" = release a base, bump the pin
+  per leaf.
 
 orcloop does **not** use this base: it is a pure poller with no Node, no
 claude-code and no worker, and stays on `python-slim`.
@@ -95,10 +103,17 @@ first-run seeding, ENV skeleton, entrypoint stub.
 
 ## Releasing
 
-1. Merge to `main` (CI = build + smoke on every PR).
-2. Tag: `git tag v0.1.0 && git push origin v0.1.0`.
-3. The `publish` workflow builds, re-runs the smoke test, and pushes
-   `:0.1.0`, `:0.1` and `:0` to GHCR using the workflow's own `GITHUB_TOKEN`.
+The release act is **bumping the `VERSION` file in your PR** (semver, no
+leading `v`). On merge to `main`, the `release` workflow creates the matching
+`vX.Y.Z` git tag and publishes `:X.Y.Z`, `:X.Y` and `:X` to GHCR (build +
+smoke-test gated, `GITHUB_TOKEN` only). A PR that doesn't touch `VERSION`
+releases nothing.
+
+Manual fallback: `git tag vX.Y.Z && git push origin vX.Y.Z` still triggers the
+`publish` workflow directly. The two routes never double-publish — the auto
+path skips itself when the tag already exists. (Plumbing note: the auto path
+*calls* publish rather than relying on its tag push, because `GITHUB_TOKEN`-
+created tags don't trigger workflows.)
 
 **One-time setup after the first publish:** GHCR packages default to
 *private*. Flip `alissa-loopwork-base` to **public** in the org's package
