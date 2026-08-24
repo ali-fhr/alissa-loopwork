@@ -109,6 +109,13 @@ leading `v`). On merge to `main`, the `release` workflow creates the matching
 smoke-test gated, `GITHUB_TOKEN` only). A PR that doesn't touch `VERSION`
 releases nothing.
 
+CI enforces the pairing on every PR (the `version-guard` job): touching an
+image input (`Dockerfile`, `entrypoint-stub.sh`) without bumping `VERSION`
+fails, as does setting `VERSION` to a value whose tag already exists (that PR
+would merge and release nothing). The reverse stays legal — a VERSION-only
+bump is how you re-snapshot the unpinned agent/alissa CLIs into a fresh
+release.
+
 Manual fallback: `git tag vX.Y.Z && git push origin vX.Y.Z` still triggers the
 `publish` workflow directly. The two routes never double-publish — the auto
 path skips itself when the tag already exists. (Plumbing note: the auto path

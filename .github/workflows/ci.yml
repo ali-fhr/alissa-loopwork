@@ -1,5 +1,9 @@
 # PR / main gate: build the base image and run the offline smoke test.
-# No push — publishing happens only on version tags (publish.yml).
+# No push — publishing happens via release.yml / publish.yml.
+# PRs additionally get the version guard: a change to any image input MUST come
+# with a VERSION bump (that bump is what releases it on merge — see release.yml),
+# and a changed VERSION must not collide with an existing tag (which would merge
+# and then release nothing).
 name: ci
 
 on:
@@ -11,6 +15,39 @@ permissions:
   contents: read
 
 jobs:
+  version-guard:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Require a VERSION bump when image inputs change
+        run: |
+          set -euo pipefail
+          # Image inputs = files that alter the built image (extend as the
+          # build context grows). Deliberately NOT tests/, workflows, README —
+          # those change the repo, not the image, and need no release. The
+          # guard is one-directional: a VERSION-only PR stays legal (that is
+          # how the unpinned agent CLIs get re-snapshotted).
+          IMAGE_INPUTS='^(Dockerfile|entrypoint-stub\.sh)$'
+          CHANGED="$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")"
+          echo "changed files:"; echo "$CHANGED"
+          if echo "$CHANGED" | grep -qE "$IMAGE_INPUTS" \
+              && ! echo "$CHANGED" | grep -qx "VERSION"; then
+            echo "::error file=VERSION::Image inputs changed but VERSION was not bumped — bump VERSION so the change ships as a release on merge (release.yml)."
+            exit 1
+          fi
+          if echo "$CHANGED" | grep -qx "VERSION"; then
+            V="$(tr -d '[:space:]' < VERSION)"
+            if git ls-remote --exit-code --tags origin "refs/tags/v$V" > /dev/null; then
+              echo "::error file=VERSION::VERSION is $V but tag v$V already exists — this PR would merge without releasing anything. Bump to a new version."
+              exit 1
+            fi
+          fi
+          echo "version guard: OK"
+
   build-and-smoke:
     runs-on: ubuntu-latest
     steps:
