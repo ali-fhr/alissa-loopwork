@@ -1,0 +1,60 @@
+# VERSION-file releases: merging a change to VERSION on main auto-creates the
+# matching vX.Y.Z git tag and publishes the image — the release act is "bump
+# VERSION in the PR", reviewable like everything else.
+#
+# The tag is created with GITHUB_TOKEN, whose events deliberately do NOT
+# trigger other workflows (GitHub's recursion guard) — so this workflow CALLS
+# publish.yml directly instead of relying on the tag push to fire it. A tag
+# pushed by hand still triggers publish.yml on its own; this path skips itself
+# when the tag already exists, so the two routes never double-publish.
+name: release
+
+on:
+  push:
+    branches: [main]
+    paths: [VERSION]
+
+permissions:
+  contents: write
+  packages: write
+
+jobs:
+  tag:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      created: ${{ steps.tag.outputs.created }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Read VERSION
+        id: ver
+        run: |
+          set -euo pipefail
+          V="$(tr -d '[:space:]' < VERSION)"
+          case "$V" in
+            *.*.*) ;;
+            *) echo "VERSION is not a semver: '$V'" >&2; exit 1 ;;
+          esac
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+
+      - name: Create tag if absent
+        id: tag
+        run: |
+          set -euo pipefail
+          T="v${{ steps.ver.outputs.version }}"
+          if git ls-remote --exit-code --tags origin "refs/tags/$T" > /dev/null; then
+            echo "tag $T already exists — nothing to release"
+            echo "created=false" >> "$GITHUB_OUTPUT"
+          else
+            git tag "$T"
+            git push origin "$T"
+            echo "created=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  publish:
+    needs: tag
+    if: needs.tag.outputs.created == 'true'
+    uses: ./.github/workflows/publish.yml
+    with:
+      version: ${{ needs.tag.outputs.version }}

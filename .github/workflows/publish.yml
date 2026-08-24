@@ -1,18 +1,29 @@
-# Tag-driven publish to GHCR: pushing a git tag vX.Y.Z builds the image, runs
-# the same smoke test as CI, and (only if it passes) pushes
+# Publish to GHCR: builds the image, runs the same smoke test as CI, and (only
+# if it passes) pushes
 #   ghcr.io/ali-fhr/alissa-loopwork-base:X.Y.Z  +  :X.Y  +  :X
 # Auth is the workflow's own GITHUB_TOKEN (packages: write) — no extra secrets.
-# metadata-action stamps the OCI labels (incl. org.opencontainers.image.source),
-# which links the package to this repo in GHCR.
 #
-# One-time after the first publish: flip the package's visibility to PUBLIC in
-# the org package settings — GHCR packages default to private, and the Railway
-# builds pull this image anonymously (see README).
+# Two ways in, one job:
+#   * push of a git tag vX.Y.Z (the manual/backfill path), version = the tag
+#   * workflow_call from release.yml (the VERSION-file auto path), version = the
+#     input. This call exists because tags created with GITHUB_TOKEN do NOT
+#     trigger other workflows (GitHub's recursion guard) — release.yml must
+#     invoke publishing explicitly rather than rely on its tag push.
+# Image tags are computed from the version in bash (metadata-action was dropped:
+# it derives tags from the git ref, which on the workflow_call path is a branch,
+# not the tag). OCI labels are set explicitly for the same reason — the source
+# label is what links the package to this repo in GHCR.
 name: publish
 
 on:
   push:
     tags: ["v*.*.*"]
+  workflow_call:
+    inputs:
+      version:
+        description: "Semver to publish (no leading v), e.g. 0.2.0"
+        required: true
+        type: string
 
 permissions:
   contents: read
@@ -27,7 +38,7 @@ jobs:
       - uses: docker/setup-buildx-action@v3
 
       # Build once into the local docker store and gate the push on the smoke
-      # test — a tag must never publish an image CI would have failed.
+      # test — a release must never publish an image CI would have failed.
       - name: Build image
         uses: docker/build-push-action@v6
         with:
@@ -43,6 +54,19 @@ jobs:
           -v "$PWD/tests/smoke.sh:/smoke.sh:ro"
           alissa-loopwork-base:smoke /smoke.sh
 
+      - name: Compute image tags
+        id: ver
+        run: |
+          set -euo pipefail
+          V="${{ inputs.version || github.ref_name }}"
+          V="${V#v}"
+          case "$V" in
+            *.*.*) ;;
+            *) echo "not a semver: $V" >&2; exit 1 ;;
+          esac
+          IMG=ghcr.io/ali-fhr/alissa-loopwork-base
+          echo "tags=$IMG:$V,$IMG:${V%.*},$IMG:${V%%.*}" >> "$GITHUB_OUTPUT"
+
       - name: Log in to GHCR
         uses: docker/login-action@v3
         with:
@@ -50,21 +74,15 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Image metadata
-        id: meta
-        uses: docker/metadata-action@v5
-        with:
-          images: ghcr.io/ali-fhr/alissa-loopwork-base
-          tags: |
-            type=semver,pattern={{version}}
-            type=semver,pattern={{major}}.{{minor}}
-            type=semver,pattern={{major}}
-
       - name: Push image
         uses: docker/build-push-action@v6
         with:
           context: .
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: ${{ steps.ver.outputs.tags }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/ali-fhr/alissa-loopwork
+            org.opencontainers.image.title=alissa-loopwork-base
+            org.opencontainers.image.description=Shared runtime substrate for the Alissa loopwork daemon images
+            org.opencontainers.image.revision=${{ github.sha }}
           cache-from: type=gha

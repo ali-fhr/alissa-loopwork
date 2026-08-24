@@ -22,7 +22,8 @@
 #
 # What the base provides (and leaves must NOT re-do):
 #   * python 3.12 + Node 22 + gh + git + tmux + tini + gosu (+ firewall tools)
-#   * claude-code (the agent the worker spawns) + first-run pre-seeding
+#   * the agent CLIs the worker can spawn — claude-code (+ first-run
+#     pre-seeding), codex, and pi — one image for all three
 #   * the alissa CLI (worker, tmux queue, tasks) on the `alissa` user's PATH
 #   * non-root `alissa` user (uid 1000) + /workspace volume mount point
 #   * system-wide GitHub SSH→HTTPS rewrite with gh as credential helper
@@ -39,8 +40,9 @@
 #
 #   docker build -t alissa-loopwork-base .
 #
-# Versioning: git tag vX.Y.Z on this repo publishes :X.Y.Z, :X.Y and :X (see
-# .github/workflows/publish.yml). Leaves pin an exact semver.
+# Versioning: bump the VERSION file (auto-tag + publish on merge, see
+# .github/workflows/release.yml) or push a git tag vX.Y.Z by hand — either way
+# the publish workflow ships :X.Y.Z, :X.Y and :X. Leaves pin an exact semver.
 # =============================================================================
 
 # Base is pinned to python 3.12 (matches the daemon repos' .python-version);
@@ -80,12 +82,24 @@ RUN set -eux; \
     apt-get install -y --no-install-recommends gh nodejs; \
     rm -rf /var/lib/apt/lists/*
 
-# --- claude-code (the agent the worker spawns) --------------------------------
-# Unpinned on purpose: a base-image release snapshots whatever claude-code is
-# current at build time, and leaves advance by bumping their base pin. That
-# makes "bump claude-code everywhere" a one-line change per leaf instead of a
+# --- Agent CLIs (what the worker can spawn) -----------------------------------
+# One image, three agents:
+#   @anthropic-ai/claude-code        -> `claude` (the one the daemons drive today)
+#   @openai/codex                    -> `codex`
+#   @mariozechner/pi-coding-agent    -> `pi`    (NB: NOT @mariozechner/pi —
+#                                       that package ships `pi-pods`, a
+#                                       different tool)
+# All unpinned on purpose: a base-image release snapshots whatever is current
+# at build time, and leaves advance by bumping their base pin. That makes
+# "bump the agents everywhere" a one-line change per leaf instead of a
 # parallel npm edit per repo.
-RUN npm install -g @anthropic-ai/claude-code \
+# Binaries only for codex/pi: their auth is runtime env (OPENAI_API_KEY /
+# provider keys), and headless first-run seeding is deferred until a leaf
+# actually wires them into a worker profile — only claude is pre-seeded below.
+RUN npm install -g \
+        @anthropic-ai/claude-code \
+        @openai/codex \
+        @mariozechner/pi-coding-agent \
     && npm cache clean --force
 
 # --- Non-root runtime user ----------------------------------------------------

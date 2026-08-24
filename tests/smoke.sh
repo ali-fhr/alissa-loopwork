@@ -26,6 +26,8 @@ check "tini present"              test -x /usr/bin/tini
 check "gosu present"              command -v gosu
 check "jq present"                command -v jq
 check "claude-code runs"          claude --version
+check "codex runs"                codex --version
+check "pi runs"                   pi --version
 
 # --- non-root user + workspace ----------------------------------------------
 check "alissa uid is 1000"        sh -c 'test "$(id -u alissa)" = "1000"'
