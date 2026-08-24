@@ -1,0 +1,34 @@
+# PR / main gate: build the base image and run the offline smoke test.
+# No push — publishing happens only on version tags (publish.yml).
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          load: true
+          tags: alissa-loopwork-base:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Smoke test
+        run: >
+          docker run --rm --entrypoint /bin/bash
+          -v "$PWD/tests/smoke.sh:/smoke.sh:ro"
+          alissa-loopwork-base:ci /smoke.sh
