@@ -116,6 +116,10 @@ would merge and release nothing). The reverse stays legal — a VERSION-only
 bump is how you re-snapshot the unpinned agent/alissa CLIs into a fresh
 release.
 
+Semver intent: **patch** = re-snapshot of the unpinned CLIs or non-contract
+fixes; **minor** = additive (a new tool or agent CLI); **major** = a break in
+the leaf contract above (entrypoint path, user, ENV skeleton, git config).
+
 Manual fallback: `git tag vX.Y.Z && git push origin vX.Y.Z` still triggers the
 `publish` workflow directly. The two routes never double-publish — the auto
 path skips itself when the tag already exists. (Plumbing note: the auto path
