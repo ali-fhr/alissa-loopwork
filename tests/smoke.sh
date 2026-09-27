@@ -28,6 +28,14 @@ check "jq present"                command -v jq
 check "claude-code runs"          claude --version
 check "codex runs"                codex --version
 check "pi runs"                   pi --version
+# Informational: the agent CLIs are unpinned, so print what this build actually
+# snapshotted (the release notes in README.md record these numbers).
+ver() { # ver <bin> <npm-package>: the CLI's own --version, else the installed npm version
+    local out; out="$("$1" --version 2>&1 | head -1)"
+    [ -n "$out" ] || out="$(npm ls -g --depth=0 2>/dev/null | grep -o "$2@[^ ]*")"
+    printf '%s' "${out:-unknown}"
+}
+echo "versions: claude-code $(ver claude @anthropic-ai/claude-code) | codex $(ver codex @openai/codex) | pi $(ver pi @mariozechner/pi-coding-agent)"
 
 # --- non-root user + workspace ----------------------------------------------
 check "alissa uid is 1000"        sh -c 'test "$(id -u alissa)" = "1000"'
