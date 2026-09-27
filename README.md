@@ -132,6 +132,11 @@ Each entry records what the release's build snapshotted (the agent CLIs are
 unpinned, so the number is only known once the image is built — CI's smoke
 step prints them; see `tests/smoke.sh`).
 
+- **0.2.3** — re-snapshot cut for the alissa CLI: picks up the paste lead-in
+  (ali-fhr/studio.alissa.app#1590) so managed Claude Code sessions no longer
+  refuse a paste-sized dispatch as "only pasted text" (Claude Code ≥ 2.1.283
+  wraps one input chunk > 800 chars in `<pasted_content>`). Agent CLIs as of
+  the build date. No image-input changes.
 - **0.2.2** — re-snapshot: claude-code 2.1.283 (Opus 5.5 aware — ≥ 2.1.280
   knows `claude-opus-5-5` as the default Opus), codex 0.157.1, pi 0.73.1, as
   of the build date (2026-09-27). No image-input changes.

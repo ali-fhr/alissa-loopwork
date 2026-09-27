@@ -35,7 +35,7 @@ ver() { # ver <bin> <npm-package>: the CLI's own --version, else the installed n
     [ -n "$out" ] || out="$(npm ls -g --depth=0 2>/dev/null | grep -o "$2@[^ ]*")"
     printf '%s' "${out:-unknown}"
 }
-echo "versions: claude-code $(ver claude @anthropic-ai/claude-code) | codex $(ver codex @openai/codex) | pi $(ver pi @mariozechner/pi-coding-agent)"
+echo "versions: claude-code $(ver claude @anthropic-ai/claude-code) | codex $(ver codex @openai/codex) | pi $(ver pi @mariozechner/pi-coding-agent) | alissa $(gosu alissa alissa --version 2>/dev/null || echo unknown)"
 
 # --- non-root user + workspace ----------------------------------------------
 check "alissa uid is 1000"        sh -c 'test "$(id -u alissa)" = "1000"'
