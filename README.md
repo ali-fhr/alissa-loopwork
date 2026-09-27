@@ -126,6 +126,21 @@ path skips itself when the tag already exists. (Plumbing note: the auto path
 *calls* publish rather than relying on its tag push, because `GITHUB_TOKEN`-
 created tags don't trigger workflows.)
 
+### Release history
+
+Each entry records what the release's build snapshotted (the agent CLIs are
+unpinned, so the number is only known once the image is built — CI's smoke
+step prints them; see `tests/smoke.sh`).
+
+- **0.2.2** — re-snapshot: claude-code 2.1.283 (Opus 5.5 aware — ≥ 2.1.280
+  knows `claude-opus-5-5` as the default Opus), codex 0.157.1, pi 0.73.1, as
+  of the build date (2026-09-27). No image-input changes.
+- **0.2.1** — re-snapshot: claude-code 2.1.263 (≥ 2.1.251, required by
+  `claude-fable-5-1`). No image-input changes.
+- **0.2.0** — agent CLIs codex and pi added alongside claude-code; CI version
+  guard.
+- **0.1.0** — first release of the base image.
+
 **One-time setup after the first publish:** GHCR packages default to
 *private*. Flip `alissa-loopwork-base` to **public** in the org's package
 settings (and ensure the org allows public packages) — the Railway services

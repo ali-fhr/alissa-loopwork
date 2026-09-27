@@ -28,6 +28,9 @@ check "jq present"                command -v jq
 check "claude-code runs"          claude --version
 check "codex runs"                codex --version
 check "pi runs"                   pi --version
+# Informational: the agent CLIs are unpinned, so print what this build actually
+# snapshotted (the release notes in README.md record these numbers).
+echo "versions: claude-code $(claude --version 2>/dev/null | head -1) | codex $(codex --version 2>/dev/null | head -1) | pi $(pi --version 2>/dev/null | head -1)"
 
 # --- non-root user + workspace ----------------------------------------------
 check "alissa uid is 1000"        sh -c 'test "$(id -u alissa)" = "1000"'
