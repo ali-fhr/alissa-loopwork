@@ -116,6 +116,15 @@ would merge and release nothing). The reverse stays legal — a VERSION-only
 bump is how you re-snapshot the unpinned agent/alissa CLIs into a fresh
 release.
 
+The unpinned CLI layers are rebuilt on **every** CI and release build: both
+workflows pass `SNAPSHOT_STAMP=<run id>` as a build arg that the Dockerfile
+uses right before the `npm install -g` and `curl … | bash` steps, so BuildKit's
+GHA cache can never hand a release the previous build's install layers (which
+it did on the 0.2.3 trial build — every install layer `CACHED`, old bundle
+inside). The apt/node layers above the stamp stay cached. The smoke test prints
+the alissa bundle's sha256 next to its version for the same reason: `--version`
+alone cannot tell two snapshots apart.
+
 Semver intent: **patch** = re-snapshot of the unpinned CLIs or non-contract
 fixes; **minor** = additive (a new tool or agent CLI); **major** = a break in
 the leaf contract above (entrypoint path, user, ENV skeleton, git config).
@@ -136,7 +145,9 @@ step prints them; see `tests/smoke.sh`).
   (ali-fhr/studio.alissa.app#1590) so managed Claude Code sessions no longer
   refuse a paste-sized dispatch as "only pasted text" (Claude Code ≥ 2.1.283
   wraps one input chunk > 800 chars in `<pasted_content>`). Agent CLIs as of
-  the build date. No image-input changes.
+  the build date. Image-input change: the `SNAPSHOT_STAMP` build arg so the
+  unpinned install layers are never served from cache (found on this very
+  release: the trial build shipped the 0.2.2 bundle as CACHED).
 - **0.2.2** — re-snapshot: claude-code 2.1.283 (Opus 5.5 aware — ≥ 2.1.280
   knows `claude-opus-5-5` as the default Opus), codex 0.157.1, pi 0.73.1, as
   of the build date (2026-09-27). No image-input changes.
