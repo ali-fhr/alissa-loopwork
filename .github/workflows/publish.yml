@@ -43,6 +43,10 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
+          # Busts the cache of the unpinned CLI install layers (see Dockerfile,
+          # SNAPSHOT_STAMP): a release must re-snapshot, never reuse, those layers.
+          build-args: |
+            SNAPSHOT_STAMP=${{ github.run_id }}
           load: true
           tags: alissa-loopwork-base:smoke
           cache-from: type=gha
@@ -78,6 +82,10 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
+          # Busts the cache of the unpinned CLI install layers (see Dockerfile,
+          # SNAPSHOT_STAMP): a release must re-snapshot, never reuse, those layers.
+          build-args: |
+            SNAPSHOT_STAMP=${{ github.run_id }}
           push: true
           tags: ${{ steps.ver.outputs.tags }}
           labels: |

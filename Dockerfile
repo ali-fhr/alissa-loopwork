@@ -96,7 +96,22 @@ RUN set -eux; \
 # Binaries only for codex/pi: their auth is runtime env (OPENAI_API_KEY /
 # provider keys), and headless first-run seeding is deferred until a leaf
 # actually wires them into a worker profile — only claude is pre-seeded below.
-RUN npm install -g \
+#
+# --- Snapshot stamp: the unpinned CLI layers must never come from cache ------
+# The agent CLIs (this layer) and the alissa CLI (`curl … | bash` further down)
+# are installed UNPINNED on purpose: a patch release IS a re-snapshot of them
+# (README "Releasing"). BuildKit's layer cache silently defeats that: with
+# `cache-from: type=gha` and an unchanged python base digest, a VERSION-only
+# release reuses the previous build's install layers byte-for-byte and ships
+# the OLD bundles — caught on #6, whose trial build reported every install layer
+# as CACHED and the 0.2.2-era alissa CLI as "0.3.0" (the new bundle says 0.3.0
+# too). Both workflows pass SNAPSHOT_STAMP=<workflow run id>; a build arg busts
+# the cache from its first USE, so everything from here down is rebuilt on every
+# CI/release build while the apt/node layers above stay cached. Unset (a local
+# `docker build`) = an ordinary cached dev build.
+ARG SNAPSHOT_STAMP=unset
+RUN echo "snapshot ${SNAPSHOT_STAMP}: agent CLIs" \
+    && npm install -g \
         @anthropic-ai/claude-code \
         @openai/codex \
         @mariozechner/pi-coding-agent \
@@ -137,7 +152,11 @@ WORKDIR /home/alissa
 # The alissa CLI installer is npm-free: it drops a `node cli.mjs` launcher into
 # ~/.local/bin. Run it as the target user so it lands in the user's home.
 ENV PATH="/home/alissa/.local/bin:${PATH}"
-RUN curl -fsSL https://share.alissa.app/install | bash
+# SNAPSHOT_STAMP (declared above) is used here too, so this layer is never
+# served from the previous release's cache — that is the whole point of a
+# re-snapshot release.
+RUN echo "snapshot ${SNAPSHOT_STAMP}: alissa CLI" \
+    && curl -fsSL https://share.alissa.app/install | bash
 
 # --- claude first-run gates: pre-seed so the TUI starts READY, no human ------
 # A brand-new user hits claude's first-run dialogs (welcome/onboarding, theme

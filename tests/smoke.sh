@@ -35,7 +35,18 @@ ver() { # ver <bin> <npm-package>: the CLI's own --version, else the installed n
     [ -n "$out" ] || out="$(npm ls -g --depth=0 2>/dev/null | grep -o "$2@[^ ]*")"
     printf '%s' "${out:-unknown}"
 }
-echo "versions: claude-code $(ver claude @anthropic-ai/claude-code) | codex $(ver codex @openai/codex) | pi $(ver pi @mariozechner/pi-coding-agent)"
+# `--version` alone cannot tell two snapshots of the alissa CLI apart (the
+# published bundle keeps its version across rebuilds), so the bundle's sha256
+# rides along — compare it with share.alissa.app/cli/cli.mjs.sha256 at release
+# time. The installer drops the bundle at $HOME/.alissa/cli.mjs of the user
+# that ran it (USER alissa in the Dockerfile).
+ALISSA_BUNDLE=/home/alissa/.alissa/cli.mjs
+echo "versions: claude-code $(ver claude @anthropic-ai/claude-code) | codex $(ver codex @openai/codex) | pi $(ver pi @mariozechner/pi-coding-agent) | alissa $(gosu alissa alissa --version 2>/dev/null || echo unknown) bundle-sha256 $(sha256sum "${ALISSA_BUNDLE}" 2>/dev/null | cut -c1-12 || echo unknown)"
+# Release 0.2.3 exists to ship the paste lead-in (ali-fhr/studio.alissa.app
+# #1590). Assert it OFFLINE, inside the built image: a cached install layer
+# (the #6 blocker) or a stale share.alissa.app would fail here, in CI, before
+# anything is published. Drop or replace when a later release supersedes it.
+check "alissa CLI carries paste lead-in" grep -q pasteLeadIn "${ALISSA_BUNDLE}"
 
 # --- non-root user + workspace ----------------------------------------------
 check "alissa uid is 1000"        sh -c 'test "$(id -u alissa)" = "1000"'
