@@ -1,7 +1,11 @@
-# Publish to GHCR: builds the image, runs the same smoke test as CI, and (only
-# if it passes) pushes
-#   ghcr.io/ali-fhr/alissa-loopwork-base:X.Y.Z  +  :X.Y  +  :X
-# Auth is the workflow's own GITHUB_TOKEN (packages: write) — no extra secrets.
+# Publish to GHCR: builds BOTH variants, runs the same smokes as CI, and (only
+# if every smoke passes) pushes
+#   ghcr.io/ali-fhr/alissa-loopwork-base:X.Y.Z           +  :X.Y           +  :X
+#   ghcr.io/ali-fhr/alissa-loopwork-base:X.Y.Z-polyglot  +  :X.Y-polyglot  +  :X-polyglot
+# then writes the GitHub release vX.Y.Z with each variant's compressed size (as
+# the registry reports it) and the polyglot toolchain pins.
+# Auth is the workflow's own GITHUB_TOKEN (packages: write; contents: write for
+# the release notes) — no extra secrets.
 #
 # Two ways in, one job:
 #   * push of a git tag vX.Y.Z (the manual/backfill path), version = the tag
@@ -26,7 +30,7 @@ on:
         type: string
 
 permissions:
-  contents: read
+  contents: write
   packages: write
 
 jobs:
@@ -35,28 +39,66 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # See ci.yml: the polyglot image does not fit next to the preinstalled SDKs.
+      - name: Free runner disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
       - uses: docker/setup-buildx-action@v3
 
-      # Build once into the local docker store and gate the push on the smoke
-      # test — a release must never publish an image CI would have failed.
-      - name: Build image
+      # Build each variant once into the local docker store and gate the push on
+      # the smokes — a release must never publish an image CI would have failed.
+      # Slim first, polyglot second in the same builder: polyglot reuses slim's
+      # freshly snapshotted layers (same SNAPSHOT_STAMP), so both tags of one
+      # release carry the same agent CLIs. Cache scopes per variant (see ci.yml).
+      - name: Build slim
         uses: docker/build-push-action@v6
         with:
           context: .
+          target: slim
           # Busts the cache of the unpinned CLI install layers (see Dockerfile,
           # SNAPSHOT_STAMP): a release must re-snapshot, never reuse, those layers.
           build-args: |
             SNAPSHOT_STAMP=${{ github.run_id }}
           load: true
           tags: alissa-loopwork-base:smoke
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=slim
+          cache-to: type=gha,scope=slim,mode=max
 
-      - name: Smoke test
+      - name: Smoke test (slim)
         run: >
           docker run --rm --entrypoint /bin/bash
+          -e LOOPWORK_VARIANT=slim
           -v "$PWD/tests/smoke.sh:/smoke.sh:ro"
           alissa-loopwork-base:smoke /smoke.sh
+
+      - name: Build polyglot
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: polyglot
+          build-args: |
+            SNAPSHOT_STAMP=${{ github.run_id }}
+          load: true
+          tags: alissa-loopwork-base:smoke-polyglot
+          cache-from: |
+            type=gha,scope=slim
+            type=gha,scope=polyglot
+          cache-to: type=gha,scope=polyglot,mode=max
+
+      - name: Smoke test (polyglot)
+        run: >
+          docker run --rm --entrypoint /bin/bash
+          -e LOOPWORK_VARIANT=polyglot
+          -v "$PWD/tests/smoke.sh:/smoke.sh:ro"
+          alissa-loopwork-base:smoke-polyglot /smoke.sh
+
+      - name: Polyglot build-and-test smoke
+        run: >
+          docker run --rm --entrypoint /bin/bash
+          -v "$PWD/tests/polyglot:/polyglot:ro"
+          alissa-loopwork-base:smoke-polyglot /polyglot/smoke.sh
 
       - name: Compute image tags
         id: ver
@@ -69,7 +111,9 @@ jobs:
             *) echo "not a semver: $V" >&2; exit 1 ;;
           esac
           IMG=ghcr.io/ali-fhr/alissa-loopwork-base
+          echo "version=$V" >> "$GITHUB_OUTPUT"
           echo "tags=$IMG:$V,$IMG:${V%.*},$IMG:${V%%.*}" >> "$GITHUB_OUTPUT"
+          echo "polyglot_tags=$IMG:$V-polyglot,$IMG:${V%.*}-polyglot,$IMG:${V%%.*}-polyglot" >> "$GITHUB_OUTPUT"
 
       - name: Log in to GHCR
         uses: docker/login-action@v3
@@ -78,10 +122,11 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Push image
+      - name: Push slim
         uses: docker/build-push-action@v6
         with:
           context: .
+          target: slim
           # Busts the cache of the unpinned CLI install layers (see Dockerfile,
           # SNAPSHOT_STAMP): a release must re-snapshot, never reuse, those layers.
           build-args: |
@@ -93,4 +138,63 @@ jobs:
             org.opencontainers.image.title=alissa-loopwork-base
             org.opencontainers.image.description=Shared runtime substrate for the Alissa loopwork daemon images
             org.opencontainers.image.revision=${{ github.sha }}
-          cache-from: type=gha
+          cache-from: type=gha,scope=slim
+
+      - name: Push polyglot
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: polyglot
+          build-args: |
+            SNAPSHOT_STAMP=${{ github.run_id }}
+          push: true
+          tags: ${{ steps.ver.outputs.polyglot_tags }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/ali-fhr/alissa-loopwork
+            org.opencontainers.image.title=alissa-loopwork-base (polyglot)
+            org.opencontainers.image.description=Loopwork base + C/C++, Go, Rust and Java/Kotlin toolchains
+            org.opencontainers.image.revision=${{ github.sha }}
+          cache-from: |
+            type=gha,scope=slim
+            type=gha,scope=polyglot
+
+      # Release notes: each variant's compressed size = the sum of its pushed
+      # layer sizes (linux/amd64 manifest), i.e. what a pull downloads. Created
+      # if absent, notes replaced if the release already exists (re-publish).
+      - name: Release notes with variant sizes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          V: ${{ steps.ver.outputs.version }}
+        run: |
+          set -euo pipefail
+          IMG=ghcr.io/ali-fhr/alissa-loopwork-base
+          size() { # size <ref>: compressed bytes of the linux/amd64 image
+            local raw digest
+            raw="$(docker buildx imagetools inspect --raw "$1")"
+            digest="$(jq -r 'if .manifests then (.manifests[] | select(.platform.os=="linux" and .platform.architecture=="amd64") | .digest) else empty end' <<<"$raw" | head -1)"
+            if [ -n "$digest" ]; then raw="$(docker buildx imagetools inspect --raw "${1%:*}@$digest")"; fi
+            jq '[.layers[].size] | add' <<<"$raw"
+          }
+          arg() { sed -n "s/^ARG $1=//p" Dockerfile; }
+          SLIM="$(size "$IMG:$V")"
+          POLY="$(size "$IMG:$V-polyglot")"
+          {
+            echo "## Images"
+            echo
+            echo "| variant | tag | compressed (linux/amd64) |"
+            echo "|---|---|---|"
+            echo "| slim | \`$IMG:$V\` | $(numfmt --to=iec "$SLIM") |"
+            echo "| polyglot | \`$IMG:$V-polyglot\` | $(numfmt --to=iec "$POLY") (+$(numfmt --to=iec $((POLY - SLIM))) over slim) |"
+            echo
+            echo "## Polyglot toolchains"
+            echo
+            echo "Go $(arg GO_VERSION) · Rust $(arg RUST_VERSION) (rustup $(arg RUSTUP_VERSION)) · Temurin JDK $(arg TEMURIN_VERSION) · Gradle $(arg GRADLE_VERSION) · Maven $(arg MAVEN_VERSION) · gcc/g++/make/cmake/pkg-config/gdb from Debian bookworm."
+            echo
+            echo "Adopting the polyglot variant is an operator rollout decision: a leaf opts in by pinning the \`-polyglot\` tag (see README)."
+          } > notes.md
+          cat notes.md >> "$GITHUB_STEP_SUMMARY"
+          if gh release view "v$V" > /dev/null 2>&1; then
+            gh release edit "v$V" --notes-file notes.md
+          else
+            gh release create "v$V" --verify-tag --title "v$V" --notes-file notes.md
+          fi

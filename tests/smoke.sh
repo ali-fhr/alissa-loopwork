@@ -2,7 +2,9 @@
 # Offline smoke test for the loopwork base image. Runs INSIDE the container
 # (see tests/run.sh) and asserts the image contract the leaves build on:
 # toolchain present, `alissa` user shaped right, git rewrites in place, claude
-# first-run files seeded, workspace ENV skeleton set. No network, no tokens.
+# first-run files seeded, workspace ENV skeleton set — plus the variant check
+# (LOOPWORK_VARIANT: slim carries no compilers, polyglot carries all of them).
+# No network, no tokens. The polyglot build-and-test smoke is tests/polyglot/.
 set -euo pipefail
 
 fail=0
@@ -70,6 +72,42 @@ check "CLAUDE_CONFIG_DIR"         sh -c 'test "$CLAUDE_CONFIG_DIR" = "/workspace
 # --- entrypoint hook -----------------------------------------------------------
 check "entrypoint stub in place"  test -x /usr/local/bin/entrypoint.sh
 check "stub exits nonzero"        sh -c '! /usr/local/bin/entrypoint.sh'
+
+# --- variant: slim stays lean, polyglot carries its toolchains -------------------
+# LOOPWORK_VARIANT is passed by tests/run.sh / the workflows (default: slim, so a
+# bare run asserts the slim contract). Checked in the alissa user's LOGIN shell
+# too — that is the PATH a tmux-spawned session sees (Debian's /etc/profile
+# resets PATH, so ENV alone would not prove it).
+TOOLCHAIN_BINS="gcc g++ cc c++ make cmake go gofmt rustup rustc cargo java javac gradle mvn"
+VARIANT="${LOOPWORK_VARIANT:-slim}"
+echo "variant: ${VARIANT}"
+case "$VARIANT" in
+    slim)
+        for b in $TOOLCHAIN_BINS; do
+            check "slim has no ${b}"          sh -c "! command -v ${b}"
+            check "slim has no ${b} (session)" gosu alissa bash -lc "! command -v ${b}"
+        done
+        check "slim has no /opt toolchains" sh -c '! test -e /opt/go && ! test -e /opt/rust && ! test -e /opt/java && ! test -e /opt/gradle && ! test -e /opt/maven'
+        ;;
+    polyglot)
+        for b in $TOOLCHAIN_BINS clippy-driver rustfmt pkg-config; do
+            check "polyglot has ${b} (session)" gosu alissa bash -lc "command -v ${b}"
+        done
+        check "rust owned by alissa"     sh -c 'test "$(stat -c %U /opt/rust/cargo /opt/rust/rustup | sort -u)" = "alissa"'
+        check "JDK is 21"                gosu alissa bash -lc 'java -version 2>&1 | grep -q "version \"21\."'
+        check "GOTOOLCHAIN=local (session)" gosu alissa bash -lc 'test "$(go env GOTOOLCHAIN)" = local'
+        # Informational: what this build carries (README records these).
+        echo "toolchains:"
+        for cmd in "gcc --version" "cmake --version" "go version" "rustc --version" \
+                   "cargo --version" "java -version" "gradle --version" "mvn --version"; do
+            printf '  %-16s %s\n' "${cmd%% *}" "$(gosu alissa bash -lc "${cmd} 2>&1" | grep -m1 -E '[0-9]+\.[0-9]+' || echo unknown)"
+        done
+        ;;
+    *)
+        echo "FAIL unknown LOOPWORK_VARIANT=${VARIANT} (slim|polyglot)" >&2
+        fail=1
+        ;;
+esac
 
 if [ "$fail" -ne 0 ]; then
     echo "smoke: FAILED" >&2
