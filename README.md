@@ -104,8 +104,8 @@ layers, nothing in the slim layers changes — and is published by the same
 release, smoke-gated, next to the slim tags.
 
 **Why a variant and not a fatter base:** the base is shared by every fleet
-(ours and clients'), and the toolchains add ~1.5–2.5 GB that most leaves never
-use. Paying that on every pull, every fleet, for a capability only some
+(ours and clients'), and the toolchains add ~1.7 GB (≈ 0.75 GB compressed)
+that most leaves never use. Paying that on every pull, every fleet, for a capability only some
 fleets need is the wrong default; the variant makes it opt-in per fleet.
 
 | | slim (default) | polyglot |
@@ -117,10 +117,11 @@ fleets need is the wrong default; the variant makes it opt-in per fleet.
 | Java: Eclipse Temurin JDK 21 LTS | — | **21.0.12.1+1** (sha256-pinned) |
 | Gradle (Kotlin builds through Gradle's Kotlin plugin) | — | **9.8.1** (sha256-pinned) |
 | Maven | — | **3.10.0** (sha512-pinned) |
-| compressed size (linux/amd64) | ~SLIM_SIZE | ~POLY_SIZE |
+| size, linux/amd64 (compressed ≈ / uncompressed) | ≈ 464 MB / 1.3 GB | ≈ 1.2 GB / 3.0 GB |
 
-Sizes are as measured by CI for this release; the exact registry numbers for
-every release are in its GitHub release notes (`publish.yml` writes them).
+Sizes are CI-measured for 0.3.0 (compressed ≈ gzip of `docker save`); the
+exact registry numbers for every release are in its GitHub release notes
+(`publish.yml` writes them).
 
 Layout, all usable by the unprivileged `alissa` user:
 
@@ -237,7 +238,7 @@ step prints them; see `tests/smoke.sh`).
   polyglot variant"): C/C++ (build-essential, cmake, pkg-config, gdb), Go
   1.27.2, Rust 1.99.1 (rustup 1.29.1), Temurin JDK 21.0.12.1+1, Gradle 9.8.1,
   Maven 3.10.0, each proven by a build-and-test smoke. Compressed sizes
-  (linux/amd64, CI-measured): slim ~SLIM_SIZE, polyglot ~POLY_SIZE. The slim
+  (linux/amd64, CI-measured): slim ≈ 464 MB, polyglot ≈ 1.2 GB (uncompressed 1.3 GB → 3.0 GB). The slim
   tags keep their contents (asserted toolchain-free by the smoke); agent CLIs
   re-snapshotted as of the build date. No fleet rolled.
 - **0.2.3** — re-snapshot cut for the alissa CLI: picks up the paste lead-in
