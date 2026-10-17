@@ -91,22 +91,115 @@ Rules of the road:
 orcloop does **not** use this base: it is a pure poller with no Node, no
 claude-code and no worker, and stays on `python-slim`.
 
+## The polyglot variant
+
+```
+ghcr.io/ali-fhr/alissa-loopwork-base:X.Y.Z-polyglot     (+ :X.Y-polyglot, :X-polyglot)
+```
+
+The same base **plus compilers**, so sessions can build and test C, C++, Go,
+Rust and Java/Kotlin before opening a PR (and the reviewer can re-run them).
+It is the `polyglot` target of the same `Dockerfile` — slim + toolchain
+layers, nothing in the slim layers changes — and is published by the same
+release, smoke-gated, next to the slim tags.
+
+**Why a variant and not a fatter base:** the base is shared by every fleet
+(ours and clients'), and the toolchains add ~1.7 GB (≈ 0.75 GB compressed)
+that most leaves never use. Paying that on every pull, every fleet, for a capability only some
+fleets need is the wrong default; the variant makes it opt-in per fleet.
+
+| | slim (default) | polyglot |
+|---|---|---|
+| everything in "In the base" above | ✓ | ✓ |
+| C / C++: `gcc`, `g++`, `make` (build-essential), `cmake`, `pkg-config`, `gdb` | — | Debian bookworm packages |
+| Go | — | **1.27.2** (go.dev tarball, sha256-pinned) |
+| Rust: `rustup`, `rustc`, `cargo`, `clippy`, `rustfmt` | — | **1.99.1** via rustup 1.29.1 (rustup-init sha256-pinned) |
+| Java: Eclipse Temurin JDK 21 LTS | — | **21.0.12.1+1** (sha256-pinned) |
+| Gradle (Kotlin builds through Gradle's Kotlin plugin) | — | **9.8.1** (sha256-pinned) |
+| Maven | — | **3.10.0** (sha512-pinned) |
+| size, linux/amd64 (compressed ≈ / uncompressed) | ≈ 464 MB / 1.3 GB | ≈ 1.2 GB / 3.0 GB |
+
+Sizes are CI-measured for 0.3.0 (compressed ≈ gzip of `docker save`); the
+exact registry numbers for every release are in its GitHub release notes
+(`publish.yml` writes them).
+
+Layout, all usable by the unprivileged `alissa` user:
+
+- toolchains under `/opt` (`/opt/go`, `/opt/java/temurin-21`, `/opt/gradle`,
+  `/opt/maven`, `/opt/rust`) — off the `/workspace` volume, so a mount never
+  hides them;
+- Rust: `RUSTUP_HOME=/opt/rust/rustup`, `CARGO_HOME=/opt/rust/cargo`, owned by
+  `alissa` so `rustup component add` / `cargo install` work without root;
+- on `PATH` both via image `ENV` (daemon, `docker exec`, gosu) **and**
+  `/etc/profile.d/loopwork-polyglot.sh` — tmux-spawned sessions are login
+  shells, and Debian's `/etc/profile` resets `PATH`;
+- `GOTOOLCHAIN=local`: a `go.mod` asking for a newer Go fails loudly rather
+  than downloading a toolchain mid-session. Per-user caches (`~/go`,
+  `~/.cache/go-build`, `~/.gradle`, `~/.m2`) live in the alissa home.
+
+**Opting in** (a leaf, i.e. a fleet): change the base pin to the `-polyglot`
+tag of the same version — nothing else in the leaf contract changes:
+
+```dockerfile
+FROM ghcr.io/ali-fhr/alissa-loopwork-base:0.3.0-polyglot   # was :0.3.0
+```
+
+Adopting the variant is an **operator rollout decision**, made per fleet; the
+release that introduced it (0.3.0) rolled no fleet.
+
+### Bumping a polyglot toolchain
+
+All pins are the `ARG` block at the top of the `Dockerfile`; change a version
+**and** its checksum(s) together, then bump `VERSION` (CI's version guard
+requires it — the Dockerfile is an image input). Where to get each value:
+
+```sh
+# Go: version + sha256 per arch
+curl -fsS 'https://go.dev/dl/?mode=json' | jq -r '.[0] | .version, (.files[] | select(.os=="linux" and .kind=="archive" and (.arch=="amd64" or .arch=="arm64")) | "\(.arch) \(.sha256)")'
+# Rust toolchain version (RUST_VERSION) and rustup-init (RUSTUP_VERSION + sha256)
+curl -fsS https://static.rust-lang.org/dist/channel-rust-stable.toml | grep -A1 '^\[pkg.rust\]'
+curl -fsS https://static.rust-lang.org/rustup/release-stable.toml
+curl -fsS https://static.rust-lang.org/rustup/archive/<ver>/{x86_64,aarch64}-unknown-linux-gnu/rustup-init.sha256
+# Temurin 21: release name + sha256 per arch
+curl -fsS 'https://api.adoptium.net/v3/assets/latest/21/hotspot?image_type=jdk&os=linux&vendor=eclipse' | jq -r '.[] | select(.binary.architecture=="x64" or .binary.architecture=="aarch64") | "\(.binary.architecture) \(.release_name) \(.binary.package.checksum)"'
+# Gradle
+curl -fsS https://services.gradle.org/versions/current | jq -r .version
+curl -fsSL https://services.gradle.org/distributions/gradle-<ver>-bin.zip.sha256
+# Maven
+curl -fsS https://archive.apache.org/dist/maven/maven-3/<ver>/binaries/apache-maven-<ver>-bin.tar.gz.sha512
+```
+
+`TEMURIN_VERSION` is the release name without the `jdk-` prefix (e.g.
+`21.0.12.1+1`). The C/C++ tools come from the Debian archive and move with
+the base OS. If you bump Gradle, check the Kotlin plugin version in
+`tests/polyglot/kotlin/build.gradle.kts` still supports it.
+
 ## Building and testing locally
 
 ```sh
-tests/run.sh            # docker build + offline smoke test (same as CI)
+tests/run.sh            # slim: docker build + offline smoke test (same as CI)
+tests/run.sh polyglot   # polyglot: build + contract smoke + per-language smoke
+tests/run.sh all        # both
 ```
 
 The smoke test (`tests/smoke.sh`) runs inside the container with no network and
 no tokens: toolchain versions, user/workspace shape, git rewrites, claude
-first-run seeding, ENV skeleton, entrypoint stub.
+first-run seeding, ENV skeleton, entrypoint stub — and the variant check: on
+slim it asserts **none** of `gcc`/`g++`/`make`/`cmake`/`go`/`cargo`/`rustc`/
+`java`/`gradle`/`mvn` exist (so the base can't bloat by accident), on polyglot
+that all of them are on the `alissa` session PATH. The polyglot variant also
+runs `tests/polyglot/smoke.sh`, which compiles and tests a tiny sample project
+per language as `alissa` (C via make, C++ via cmake + ctest, `go test`,
+`cargo test`, `gradle test`); see `tests/polyglot/README.md`.
 
 ## Releasing
 
 The release act is **bumping the `VERSION` file in your PR** (semver, no
 leading `v`). On merge to `main`, the `release` workflow creates the matching
-`vX.Y.Z` git tag and publishes `:X.Y.Z`, `:X.Y` and `:X` to GHCR (build +
-smoke-test gated, `GITHUB_TOKEN` only). A PR that doesn't touch `VERSION`
+`vX.Y.Z` git tag and publishes `:X.Y.Z`, `:X.Y` and `:X` — and the same three
+with a `-polyglot` suffix — to GHCR (build + smoke-test gated, `GITHUB_TOKEN`
+only), then writes the `vX.Y.Z` GitHub release notes with each variant's
+compressed size. A PR that doesn't touch `VERSION`
 releases nothing.
 
 CI enforces the pairing on every PR (the `version-guard` job): touching an
@@ -141,6 +234,13 @@ Each entry records what the release's build snapshotted (the agent CLIs are
 unpinned, so the number is only known once the image is built — CI's smoke
 step prints them; see `tests/smoke.sh`).
 
+- **0.3.0** — adds the **polyglot variant** (`:0.3.0-polyglot`, see "The
+  polyglot variant"): C/C++ (build-essential, cmake, pkg-config, gdb), Go
+  1.27.2, Rust 1.99.1 (rustup 1.29.1), Temurin JDK 21.0.12.1+1, Gradle 9.8.1,
+  Maven 3.10.0, each proven by a build-and-test smoke. Compressed sizes
+  (linux/amd64, CI-measured): slim ≈ 464 MB, polyglot ≈ 1.2 GB (uncompressed 1.3 GB → 3.0 GB). The slim
+  tags keep their contents (asserted toolchain-free by the smoke); agent CLIs
+  re-snapshotted as of the build date. No fleet rolled.
 - **0.2.3** — re-snapshot cut for the alissa CLI: picks up the paste lead-in
   (ali-fhr/studio.alissa.app#1590) so managed Claude Code sessions no longer
   refuse a paste-sized dispatch as "only pasted text" (Claude Code ≥ 2.1.283

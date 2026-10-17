@@ -1,5 +1,6 @@
-# PR / main gate: build the base image and run the offline smoke test.
-# No push — publishing happens via release.yml / publish.yml.
+# PR / main gate: build both image variants (slim, polyglot) and run their
+# smokes — the offline contract smoke on each, plus the polyglot per-language
+# build-and-test smoke (tests/polyglot/, needs network for gradle). No push — publishing happens via release.yml / publish.yml.
 # PRs additionally get the version guard: a change to any image input MUST come
 # with a VERSION bump (that bump is what releases it on merge — see release.yml),
 # and a changed VERSION must not collide with an existing tag (which would merge
@@ -48,28 +49,86 @@ jobs:
           fi
           echo "version guard: OK"
 
+  # Both variants in ONE job, slim first: the polyglot build then reuses slim's
+  # layers from this builder's local cache (same SNAPSHOT_STAMP), so polyglot is
+  # provably slim + toolchain layers. Separate GHA cache scopes per variant —
+  # with one shared scope, each cache-to would overwrite the other's index.
   build-and-smoke:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
+      # The polyglot image (+ the builder's cache and the --load copy) does not
+      # fit next to the runner's preinstalled SDKs; drop the ones never used here.
+      - name: Free runner disk space
+        run: |
+          df -h /
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
       - uses: docker/setup-buildx-action@v3
 
-      - name: Build image
+      - name: Build slim
         uses: docker/build-push-action@v6
         with:
           context: .
+          target: slim
           # Busts the cache of the unpinned CLI install layers (see Dockerfile,
           # SNAPSHOT_STAMP): a release must re-snapshot, never reuse, those layers.
           build-args: |
             SNAPSHOT_STAMP=${{ github.run_id }}
           load: true
           tags: alissa-loopwork-base:ci
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=slim
+          cache-to: type=gha,scope=slim,mode=max
 
-      - name: Smoke test
+      - name: Smoke test (slim — asserts no toolchains)
         run: >
           docker run --rm --entrypoint /bin/bash
+          -e LOOPWORK_VARIANT=slim
           -v "$PWD/tests/smoke.sh:/smoke.sh:ro"
           alissa-loopwork-base:ci /smoke.sh
+
+      - name: Build polyglot
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: polyglot
+          build-args: |
+            SNAPSHOT_STAMP=${{ github.run_id }}
+          load: true
+          tags: alissa-loopwork-base:ci-polyglot
+          cache-from: |
+            type=gha,scope=slim
+            type=gha,scope=polyglot
+          cache-to: type=gha,scope=polyglot,mode=max
+
+      - name: Smoke test (polyglot — image contract + toolchains present)
+        run: >
+          docker run --rm --entrypoint /bin/bash
+          -e LOOPWORK_VARIANT=polyglot
+          -v "$PWD/tests/smoke.sh:/smoke.sh:ro"
+          alissa-loopwork-base:ci-polyglot /smoke.sh
+
+      - name: Polyglot build-and-test smoke (C, C++, Go, Rust, Kotlin/Java)
+        run: >
+          docker run --rm --entrypoint /bin/bash
+          -v "$PWD/tests/polyglot:/polyglot:ro"
+          alissa-loopwork-base:ci-polyglot /polyglot/smoke.sh
+
+      # Informational: what each variant weighs. Uncompressed = docker's image
+      # size; compressed ≈ gzip of `docker save` (the registry's exact number
+      # is reported by publish.yml in the GitHub release notes).
+      - name: Image sizes
+        run: |
+          set -euo pipefail
+          {
+            echo "| variant | uncompressed | compressed (≈) |"
+            echo "|---|---|---|"
+            for pair in slim:ci polyglot:ci-polyglot; do
+              v="${pair%%:*}"; img="alissa-loopwork-base:${pair#*:}"
+              raw="$(docker image inspect -f '{{.Size}}' "$img")"
+              gz="$(docker save "$img" | gzip -6 | wc -c)"
+              echo "| $v | $(numfmt --to=iec "$raw") | $(numfmt --to=iec "$gz") |"
+            done
+          } | tee -a "$GITHUB_STEP_SUMMARY"

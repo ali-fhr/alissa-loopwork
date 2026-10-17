@@ -38,17 +38,53 @@
 # ALISSA_API_TOKEN, CLAUDE_CODE_OAUTH_TOKEN / ANTHROPIC_API_KEY) are runtime
 # env in the deployed leaf containers, exactly as before.
 #
-#   docker build -t alissa-loopwork-base .
+#   docker build -t alissa-loopwork-base .                          # slim (default)
+#   docker build --target polyglot -t alissa-loopwork-base:polyglot .
+#
+# Two variants, one Dockerfile (see "Polyglot variant" at the bottom and the
+# README): `slim` is the base described above and stays the default target;
+# `polyglot` = slim + C/C++, Go, Rust and Java/Kotlin toolchains, published as
+# the `-polyglot` tags. The polyglot stages add layers on top of slim and never
+# change it.
 #
 # Versioning: bump the VERSION file (auto-tag + publish on merge, see
 # .github/workflows/release.yml) or push a git tag vX.Y.Z by hand — either way
 # the publish workflow ships :X.Y.Z, :X.Y and :X. Leaves pin an exact semver.
 # =============================================================================
 
+# --- Polyglot toolchain pins ----------------------------------------------------
+# Used ONLY by the polyglot stages at the bottom of this file (global ARGs must
+# precede the first FROM; an ARG a stage never re-declares does not touch it, so
+# the slim stage is unaffected). Every download is verified against the sha
+# pinned here — a bump changes the version AND its checksums together (README
+# "Bumping a polyglot toolchain" has the commands that print them).
+# Go — https://go.dev/dl/?mode=json (sha256 per linux archive)
+ARG GO_VERSION=1.27.2
+ARG GO_SHA256_AMD64=ecbadb99091a3f46e31f5f934b068b1864eafa7995211b39eaddf76996045fe5
+ARG GO_SHA256_ARM64=94f3e30b8e374bc285e7dadc11e0865726b9bc6e85b841ccceaabc0214c6b7c8
+# Rust — rustup-init from static.rust-lang.org/rustup/archive/<ver>/<triple>/
+# (+ .sha256); the toolchain itself is pinned by version and verified by rustup
+# against the channel manifest's hashes.
+ARG RUSTUP_VERSION=1.29.1
+ARG RUSTUP_SHA256_AMD64=dda7234360b7f578ca8b0ddcb80145646fa61a67c1720a5abc7051b35c9fcb71
+ARG RUSTUP_SHA256_ARM64=15f6e4ce9f583b929c996c91562bad6d4454f3281de858b02cdfdef615fac433
+ARG RUST_VERSION=1.99.1
+# Java — Eclipse Temurin JDK 21 LTS (api.adoptium.net, sha256 per tarball)
+ARG TEMURIN_VERSION=21.0.12.1+1
+ARG TEMURIN_SHA256_AMD64=ce79869e1307ed8ee1e2baa86a412b1eb5b75d10a01006d788a6f968bcfaee94
+ARG TEMURIN_SHA256_ARM64=23e37e026f12f3e706f18938ff611db3032d075b09d0879a25d06718c773e223
+# Gradle (bin zip + .sha256) and Maven (bin tarball + .sha512); arch-independent
+ARG GRADLE_VERSION=9.8.1
+ARG GRADLE_SHA256=dce76f55f8e251a3a1f130eb120f30b3d271de2b76c9b0729d316b5a1b6dc01f
+ARG MAVEN_VERSION=3.10.0
+ARG MAVEN_SHA512=908b1501bfb420bf7c8affb855534a9c407fd6099367bfb9f2f2dcb8e9799102bffb84518cde74c679bd76870247c6528683abdd620581bffa90f95d92d175aa
+
 # Base is pinned to python 3.12 (matches the daemon repos' .python-version);
 # Node 22 is layered on via NodeSource. The daemons need python >= 3.11; the
 # alissa CLI and claude-code need Node >= 18 — both satisfied.
-FROM python:3.12-slim-bookworm
+# Stage `base` is the slim image's whole content: the `slim` target at the very
+# end is `FROM base` with no instructions, so it is exactly these layers.
+FROM python:3.12-slim-bookworm AS base
 
 # Node major version (must be >= 18 for the alissa CLI and claude-code).
 ARG NODE_MAJOR=22
@@ -208,3 +244,149 @@ USER root
 COPY entrypoint-stub.sh /usr/local/bin/entrypoint.sh
 RUN chmod 0755 /usr/local/bin/entrypoint.sh
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/entrypoint.sh"]
+
+# =============================================================================
+# Polyglot variant — `--target polyglot`, published as :X.Y.Z-polyglot (+ :X.Y-
+# and :X-polyglot) next to the slim tags.
+#
+# A variant, not a fatter base: the base is shared by every fleet, and these
+# toolchains add GBs that most leaves never use. A leaf opts in by pinning the
+# -polyglot tag instead of the plain one; nothing else in the leaf contract
+# changes (same user, entrypoint hook, ENV skeleton — this is slim + layers).
+#
+# Downloads happen in throwaway fetch stages that do not depend on `base`, so
+# they stay cached across releases (only a pin bump refetches). The final stage
+# sits below SNAPSHOT_STAMP (inherited from base), so its apt install and COPYs
+# rerun on each CI/release build — cheap, the heavy downloads stay cached.
+# =============================================================================
+FROM python:3.12-slim-bookworm AS fetch
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends ca-certificates curl unzip; \
+    rm -rf /var/lib/apt/lists/*
+WORKDIR /tmp/fetch
+
+FROM fetch AS go-fetch
+ARG TARGETARCH
+ARG GO_VERSION
+ARG GO_SHA256_AMD64
+ARG GO_SHA256_ARM64
+RUN set -eux; \
+    case "${TARGETARCH:-amd64}" in \
+        amd64) sha="${GO_SHA256_AMD64}" ;; \
+        arm64) sha="${GO_SHA256_ARM64}" ;; \
+        *) echo "unsupported arch ${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSLo go.tgz "https://go.dev/dl/go${GO_VERSION}.linux-${TARGETARCH:-amd64}.tar.gz"; \
+    echo "${sha}  go.tgz" | sha256sum -c -; \
+    tar -C /opt -xzf go.tgz
+
+FROM fetch AS jdk-fetch
+ARG TARGETARCH
+ARG TEMURIN_VERSION
+ARG TEMURIN_SHA256_AMD64
+ARG TEMURIN_SHA256_ARM64
+RUN set -eux; \
+    case "${TARGETARCH:-amd64}" in \
+        amd64) arch=x64;     sha="${TEMURIN_SHA256_AMD64}" ;; \
+        arm64) arch=aarch64; sha="${TEMURIN_SHA256_ARM64}" ;; \
+        *) echo "unsupported arch ${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    tag="jdk-$(echo "${TEMURIN_VERSION}" | sed 's/+/%2B/')"; \
+    file="OpenJDK21U-jdk_${arch}_linux_hotspot_$(echo "${TEMURIN_VERSION}" | tr + _).tar.gz"; \
+    curl -fsSLo jdk.tgz "https://github.com/adoptium/temurin21-binaries/releases/download/${tag}/${file}"; \
+    echo "${sha}  jdk.tgz" | sha256sum -c -; \
+    mkdir -p /opt/java/temurin-21; \
+    tar -C /opt/java/temurin-21 --strip-components=1 --exclude='*/lib/src.zip' -xzf jdk.tgz
+
+FROM fetch AS gradle-fetch
+ARG GRADLE_VERSION
+ARG GRADLE_SHA256
+RUN set -eux; \
+    curl -fsSLo gradle.zip "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip"; \
+    echo "${GRADLE_SHA256}  gradle.zip" | sha256sum -c -; \
+    unzip -q gradle.zip -d /opt; \
+    mv "/opt/gradle-${GRADLE_VERSION}" /opt/gradle
+
+FROM fetch AS maven-fetch
+ARG MAVEN_VERSION
+ARG MAVEN_SHA512
+RUN set -eux; \
+    curl -fsSLo maven.tgz "https://archive.apache.org/dist/maven/maven-3/${MAVEN_VERSION}/binaries/apache-maven-${MAVEN_VERSION}-bin.tar.gz"; \
+    echo "${MAVEN_SHA512}  maven.tgz" | sha512sum -c -; \
+    mkdir -p /opt/maven; \
+    tar -C /opt/maven --strip-components=1 -xzf maven.tgz
+
+# Rust lives in /opt/rust (RUSTUP_HOME + CARGO_HOME), not in ~alissa or on the
+# /workspace volume: a volume mounted over it would hide the toolchain, and a
+# shared /opt keeps it out of per-user state. It is chowned to alissa (uid
+# 1000) in the final stage so `rustup component add` / `cargo install` work for
+# the unprivileged user.
+FROM fetch AS rust-fetch
+ARG TARGETARCH
+ARG RUSTUP_VERSION
+ARG RUSTUP_SHA256_AMD64
+ARG RUSTUP_SHA256_ARM64
+ARG RUST_VERSION
+ENV RUSTUP_HOME=/opt/rust/rustup \
+    CARGO_HOME=/opt/rust/cargo
+RUN set -eux; \
+    case "${TARGETARCH:-amd64}" in \
+        amd64) triple=x86_64-unknown-linux-gnu;  sha="${RUSTUP_SHA256_AMD64}" ;; \
+        arm64) triple=aarch64-unknown-linux-gnu; sha="${RUSTUP_SHA256_ARM64}" ;; \
+        *) echo "unsupported arch ${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSLo rustup-init "https://static.rust-lang.org/rustup/archive/${RUSTUP_VERSION}/${triple}/rustup-init"; \
+    echo "${sha}  rustup-init" | sha256sum -c -; \
+    chmod +x rustup-init; \
+    ./rustup-init -y --no-modify-path --profile minimal \
+        --default-toolchain "${RUST_VERSION}" --component clippy,rustfmt; \
+    find "${RUSTUP_HOME}/downloads" "${RUSTUP_HOME}/tmp" -mindepth 1 -delete
+
+FROM base AS polyglot
+# C / C++: gcc, g++, make (build-essential), cmake, pkg-config, gdb — from the
+# bookworm archive, so their versions move with Debian point releases (pinned
+# by the distro, not here).
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        build-essential cmake pkg-config gdb; \
+    rm -rf /var/lib/apt/lists/*
+COPY --from=go-fetch     /opt/go     /opt/go
+COPY --from=jdk-fetch    /opt/java   /opt/java
+COPY --from=gradle-fetch /opt/gradle /opt/gradle
+COPY --from=maven-fetch  /opt/maven  /opt/maven
+COPY --from=rust-fetch   --chown=1000:1000 /opt/rust /opt/rust
+
+# ENV covers non-login processes (docker exec, gosu, the daemon itself). Login
+# shells — what tmux starts for worker sessions — run Debian's /etc/profile,
+# which RESETS PATH; the profile.d drop-in puts the toolchains back after it.
+# GOTOOLCHAIN=local: a go.mod asking for a newer Go fails loudly instead of
+# silently downloading a toolchain at test time.
+ENV JAVA_HOME=/opt/java/temurin-21 \
+    GRADLE_HOME=/opt/gradle \
+    MAVEN_HOME=/opt/maven \
+    RUSTUP_HOME=/opt/rust/rustup \
+    CARGO_HOME=/opt/rust/cargo \
+    GOTOOLCHAIN=local \
+    PATH="/opt/rust/cargo/bin:/opt/go/bin:/opt/java/temurin-21/bin:/opt/gradle/bin:/opt/maven/bin:${PATH}"
+COPY <<'EOF' /etc/profile.d/loopwork-polyglot.sh
+# loopwork polyglot variant: toolchains on PATH for login shells (tmux sessions).
+export JAVA_HOME=/opt/java/temurin-21
+export GRADLE_HOME=/opt/gradle
+export MAVEN_HOME=/opt/maven
+export RUSTUP_HOME=/opt/rust/rustup
+export CARGO_HOME=/opt/rust/cargo
+export GOTOOLCHAIN=local
+case ":$PATH:" in
+    *:/opt/go/bin:*) ;;
+    *) PATH="/opt/rust/cargo/bin:/opt/go/bin:/opt/java/temurin-21/bin:/opt/gradle/bin:/opt/maven/bin:$PATH" ;;
+esac
+export PATH
+EOF
+
+# =============================================================================
+# Default target: the slim base, exactly the `base` stage (no instructions here
+# on purpose). Keeping it LAST keeps a plain `docker build .` = slim.
+# =============================================================================
+FROM base AS slim
