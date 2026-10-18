@@ -74,6 +74,54 @@ check "CLAUDE_CONFIG_DIR"         sh -c 'test "$CLAUDE_CONFIG_DIR" = "/workspace
 check "entrypoint stub in place"  test -x /usr/local/bin/entrypoint.sh
 check "stub exits nonzero"        sh -c '! /usr/local/bin/entrypoint.sh'
 
+# --- headless Chromium (the integration check's screenshots) ------------------
+# Launch it for real, as alissa in a LOGIN shell (a tmux session's environment),
+# offline: render a local page and write a PNG at 1440 and at 390 wide, through
+# the pinned Playwright AND through the stable binary path non-Playwright
+# drivers use. The PNG's IHDR width is asserted, not just the file's existence.
+check "PLAYWRIGHT_BROWSERS_PATH"  sh -c 'test "$PLAYWRIGHT_BROWSERS_PATH" = /opt/ms-playwright'
+check "browsers owned by alissa"  sh -c 'test "$(find /opt/ms-playwright -not -user alissa | wc -l)" = 0'
+check "chrome-headless-shell (session)" gosu alissa bash -lc 'command -v chrome-headless-shell && chrome-headless-shell --version'
+check "playwright CLI (session)"  gosu alissa bash -lc 'playwright --version'
+SHOTS="$(gosu alissa mktemp -d /tmp/browser-smoke.XXXXXX)"
+gosu alissa tee "${SHOTS}/page.html" > /dev/null <<'EOF'
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<style>body{margin:0;font:16px "Liberation Sans",sans-serif}main{padding:24px;background:#0b5}</style>
+</head><body><main><h1>loopwork smoke</h1><p>Rendered headless, offline. ✓ 🙂</p></main></body></html>
+EOF
+gosu alissa tee "${SHOTS}/shoot.js" > /dev/null <<'EOF'
+// node shoot.js <dir>: page.html -> playwright-<w>.png at each width, via the
+// GLOBAL pinned playwright (its browser comes from PLAYWRIGHT_BROWSERS_PATH).
+const { execSync } = require('child_process');
+const { chromium } = require(execSync('npm root -g').toString().trim() + '/playwright');
+(async () => {
+  const dir = process.argv[2];
+  const browser = await chromium.launch({ headless: true });
+  for (const width of [1440, 390]) {
+    const page = await browser.newPage({ viewport: { width, height: 900 } });
+    await page.goto('file://' + dir + '/page.html');
+    await page.screenshot({ path: `${dir}/playwright-${width}.png`, fullPage: true });
+    await page.close();
+  }
+  await browser.close();
+})().catch((e) => { console.error(e); process.exit(1); });
+EOF
+png_width() { # png_width <file>: the IHDR width of a valid PNG, else nothing
+    python3 -c 'import struct,sys
+d = open(sys.argv[1], "rb").read(24)
+if d[:8] == b"\x89PNG\r\n\x1a\n" and d[12:16] == b"IHDR": print(struct.unpack(">I", d[16:20])[0])' "$1" 2>/dev/null
+}
+check "playwright renders headless" gosu alissa bash -lc "cd '${SHOTS}' && timeout 120 node shoot.js '${SHOTS}'"
+for w in 1440 390; do
+    check "playwright PNG is ${w} wide" test "$(png_width "${SHOTS}/playwright-${w}.png")" = "$w"
+    check "chrome-headless-shell --screenshot at ${w}" gosu alissa bash -lc \
+        "cd '${SHOTS}' && timeout 60 chrome-headless-shell --no-sandbox --disable-dev-shm-usage --hide-scrollbars --window-size=${w},900 --screenshot='${SHOTS}/shell-${w}.png' 'file://${SHOTS}/page.html'"
+    check "chrome-headless-shell PNG is ${w} wide" test "$(png_width "${SHOTS}/shell-${w}.png")" = "$w"
+done
+echo "browser: $(gosu alissa bash -lc 'chrome-headless-shell --version' 2>/dev/null || echo unknown) | playwright $(gosu alissa bash -lc 'playwright --version' 2>/dev/null | awk '{print $2}' || echo unknown)"
+case "$SHOTS" in /tmp/browser-smoke.*) rm -rf "$SHOTS" ;; esac
+
 # --- variant: slim stays lean, polyglot carries its toolchains -------------------
 # LOOPWORK_VARIANT is passed by tests/run.sh / the workflows (default: slim, so a
 # bare run asserts the slim contract). Checked in the alissa user's LOGIN shell
