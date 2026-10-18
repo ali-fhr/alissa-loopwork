@@ -129,7 +129,7 @@ the table below.)
 | R: `R`, `Rscript` (r-base, r-base-dev) | — | **4.5.3** from CRAN's Debian repo (`4.5.3-1~bookwormcran.0`; key fingerprint-pinned) |
 | R packages `testthat`, `renv` | — | **3.3.2**, **1.3.1** — Posit Package Manager snapshot 2026-10-15 |
 | languages manifest `/usr/local/share/alissa/languages.json` | — (absent) | ✓ (see below) |
-| size, linux/amd64 (compressed ≈ / uncompressed) | ≈ 464 MB / 1.3 GB | 0.3.0: ≈ 1.2 GB / 3.0 GB · 0.4.0: ≈ 1.5 GB / 3.8 GB · 0.5.0: **SIZE_TBD** |
+| size, linux/amd64 (compressed ≈ / uncompressed) | ≈ 464 MB / 1.3 GB | 0.3.0: ≈ 1.2 GB / 3.0 GB · 0.4.0: ≈ 1.5 GB / 3.8 GB · 0.5.0: **≈ 1.8 GB / 4.3 GB** |
 
 Sizes are CI-measured (compressed ≈ gzip of `docker save`, from CI's "Image
 sizes" step); the exact registry numbers for every release are in its GitHub
@@ -367,7 +367,7 @@ step prints them; see `tests/smoke.sh`).
   repo; r-base + r-base-dev) with **testthat 3.3.2** and **renv 1.3.1** (PPM
   snapshot 2026-10-15), proven by a testthat run via `Rscript`; both are in
   the languages manifest (`scala`, `r`). Polyglot size (linux/amd64,
-  CI-measured): SIZE_TBD_HISTORY. Slim's content is unchanged (CI asserts it
+  CI-measured): ≈ 1.8 GB compressed / 4.3 GB uncompressed (0.4.0: ≈ 1.5 GB / 3.8 GB; slim unchanged at ≈ 464 MB / 1.3 GB). Slim's content is unchanged (CI asserts it
   byte-identical to the base branch's slim); agent CLIs re-snapshotted as of
   the build date. No fleet rolled.
 - **0.4.0** — the polyglot variant gains **Ruby 4.0.7** (+ Bundler 4.0.20),
