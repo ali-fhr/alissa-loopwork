@@ -125,7 +125,7 @@ the table below.)
 | Composer | — | **2.10.3** (sha256-pinned) |
 | .NET SDK (C#), LTS channel | — | **10.0.402** (runtime 10.0.13; sha512-pinned) |
 | languages manifest `/usr/local/share/alissa/languages.json` | — (absent) | ✓ (see below) |
-| size, linux/amd64 (compressed ≈ / uncompressed) | ≈ 464 MB / 1.3 GB | 0.3.0: ≈ 1.2 GB / 3.0 GB · 0.4.0: SIZE_TBD |
+| size, linux/amd64 (compressed ≈ / uncompressed) | ≈ 464 MB / 1.3 GB | 0.3.0: ≈ 1.2 GB / 3.0 GB · 0.4.0: **≈ 1.5 GB / 3.8 GB** |
 
 Sizes are CI-measured (compressed ≈ gzip of `docker save`, from CI's "Image
 sizes" step); the exact registry numbers for every release are in its GitHub
@@ -323,7 +323,7 @@ step prints them; see `tests/smoke.sh`).
   **.NET SDK 10.0.402** (LTS), each proven by a build-and-test smoke (minitest,
   PHPUnit, xunit) as `alissa`; plus the **languages manifest**
   `/usr/local/share/alissa/languages.json` covering every polyglot language.
-  Polyglot compressed size (linux/amd64, CI-measured): SIZE_TBD. Slim's
+  Polyglot size (linux/amd64, CI-measured): ≈ 1.5 GB compressed / 3.8 GB uncompressed (0.3.0: ≈ 1.2 GB / 3.0 GB; slim unchanged at ≈ 464 MB / 1.3 GB). Slim's
   content is unchanged (CI asserts it byte-identical to the base branch's slim); agent CLIs
   re-snapshotted as of the build date. No fleet rolled.
 - **0.3.0** — adds the **polyglot variant** (`:0.3.0-polyglot`, see "The
