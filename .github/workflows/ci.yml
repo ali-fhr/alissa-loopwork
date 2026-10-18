@@ -113,7 +113,7 @@ jobs:
           -v "$PWD/tests/smoke.sh:/smoke.sh:ro"
           alissa-loopwork-base:ci-polyglot /smoke.sh
 
-      - name: Polyglot build-and-test smoke (C, C++, Go, Rust, Kotlin/Java, Ruby, PHP, .NET)
+      - name: Polyglot build-and-test smoke (C, C++, Go, Rust, Kotlin/Java, Scala + Spark, Ruby, PHP, .NET, R)
         run: >
           docker run --rm --entrypoint /bin/bash
           -v "$PWD/tests/polyglot:/polyglot:ro"

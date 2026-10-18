@@ -10,8 +10,10 @@
 # `gradle test` (Kotlin Gradle plugin + kotlin-test/JUnit from the Gradle Plugin
 # Portal and Maven Central), `bundle install` (rubygems.org metadata; the gems
 # themselves are Ruby's bundled minitest/rake), `composer install` (PHPUnit from
-# Packagist) and `dotnet test` (xunit.v3 from nuget.org). C, C++, Go and Rust
-# are offline (no third-party deps).
+# Packagist), `dotnet test` (xunit.v3 from nuget.org) and both sbt builds
+# (the Scala compilers, ScalaTest and Spark from Maven Central — sbt itself is
+# pre-warmed in the image). C, C++, Go, Rust and R are offline (testthat is in
+# the image).
 set -euo pipefail
 
 SRC="${POLYGLOT_SRC:-/polyglot}"
@@ -40,6 +42,9 @@ run "Maven runs"          .      'mvn --version'
 run "Ruby (bundler + rake/minitest)" ruby 'bundle install --prefer-local && bundle exec rake test'
 run "PHP (composer + phpunit)" php 'composer validate --no-check-publish && composer install --no-interaction --no-progress && vendor/bin/phpunit'
 run ".NET (dotnet test, xunit)" dotnet 'dotnet test --project Adder.Tests/Adder.Tests.csproj'
+run "Scala 3 (sbt + ScalaTest)" scala 'sbt --batch -Dsbt.supershell=false -Dsbt.color=false testFull'
+run "Spark local mode (sbt + ScalaTest, Scala 2.13)" spark 'sbt --batch -Dsbt.supershell=false -Dsbt.color=false testFull'
+run "R (Rscript + testthat)" r "Rscript -e 'testthat::test_dir(\"tests/testthat\", load_package = \"source\", stop_on_failure = TRUE)'"
 
 if [ "$fail" -ne 0 ]; then
     echo "polyglot smoke: FAILED" >&2

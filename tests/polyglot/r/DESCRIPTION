@@ -1,0 +1,10 @@
+Package: adder
+Title: The Polyglot Image's R Smoke Sample
+Version: 0.1.0
+Authors@R: person("Alissa", "Loopwork", email = "support@alissa.app", role = c("aut", "cre"))
+Description: Adds two numbers; exists to prove R, Rscript and testthat work in
+    the polyglot seat image.
+License: Apache License (>= 2)
+Encoding: UTF-8
+Suggests: testthat (>= 3.0.0)
+Config/testthat/edition: 3

@@ -98,8 +98,8 @@ ghcr.io/ali-fhr/alissa-loopwork-base:X.Y.Z-polyglot     (+ :X.Y-polyglot, :X-pol
 ```
 
 The same base **plus compilers**, so sessions can build and test C, C++, Go,
-Rust, Java/Kotlin, Ruby, PHP and .NET (C#) before opening a PR (and the
-reviewer can re-run them).
+Rust, Java/Kotlin, Scala (incl. Apache Spark jobs in local mode), Ruby, PHP,
+.NET (C#) and R before opening a PR (and the reviewer can re-run them).
 It is the `polyglot` target of the same `Dockerfile` — slim + toolchain
 layers, nothing in the slim layers changes — and is published by the same
 release, smoke-gated, next to the slim tags.
@@ -124,8 +124,12 @@ the table below.)
 | PHP CLI + mbstring, xml (dom, xmlwriter, …), curl, zip | — | **8.5** line from packages.sury.org (signed apt repo; keyring sha256-pinned) |
 | Composer | — | **2.10.3** (sha256-pinned) |
 | .NET SDK (C#), LTS channel | — | **10.0.402** (runtime 10.0.13; sha512-pinned) |
+| Scala: `sbt` on the JDK above (Scala 2.13 / 3 resolved per project) | — | **sbt 2.0.10** (sha256-pinned), its boot + coursier cache pre-warmed in the alissa home |
+| Apache Spark (local mode) | — | per project via sbt — smoke-tested with **Spark 4.2.0** on Scala 2.13.18 |
+| R: `R`, `Rscript` (r-base, r-base-dev) | — | **4.5.3** from CRAN's Debian repo (`4.5.3-1~bookwormcran.0`; key fingerprint-pinned) |
+| R packages `testthat`, `renv` | — | **3.3.2**, **1.3.1** — Posit Package Manager snapshot 2026-10-15 |
 | languages manifest `/usr/local/share/alissa/languages.json` | — (absent) | ✓ (see below) |
-| size, linux/amd64 (compressed ≈ / uncompressed) | ≈ 464 MB / 1.3 GB | 0.3.0: ≈ 1.2 GB / 3.0 GB · 0.4.0: **≈ 1.5 GB / 3.8 GB** |
+| size, linux/amd64 (compressed ≈ / uncompressed) | ≈ 464 MB / 1.3 GB | 0.3.0: ≈ 1.2 GB / 3.0 GB · 0.4.0: ≈ 1.5 GB / 3.8 GB · 0.5.0: **≈ 1.8 GB / 4.3 GB** |
 
 Sizes are CI-measured (compressed ≈ gzip of `docker save`, from CI's "Image
 sizes" step); the exact registry numbers for every release are in its GitHub
@@ -145,25 +149,45 @@ Layout, all usable by the unprivileged `alissa` user:
 - .NET: `DOTNET_ROOT=/opt/dotnet`, owned by `alissa` (so `dotnet workload`
   works without root), with `DOTNET_CLI_TELEMETRY_OPTOUT=1`, `DOTNET_NOLOGO=1`
   and `DOTNET_GENERATE_ASPNET_CERTIFICATE=false` for unattended sessions;
+- Scala: the sbt runner is `/opt/sbt`, and `/etc/sbt/sbtopts` makes
+  `--server` the default — sbt 2.x otherwise runs its thin client and leaves
+  a background sbt server JVM behind every call, an orphan in an unattended
+  seat (`sbt --client` still opts in). The pinned sbt's boot dir
+  (`~/.sbt/boot`) and the coursier cache of sbt's own artifacts
+  (`~/.cache/coursier`) are pre-warmed into the alissa home (≈ 200 MB), so a
+  project on sbt 2.0.10 starts without fetching sbt itself; its Scala
+  compiler and libraries — Spark's ≈ 300 MB of jars included — are fetched
+  per project at first build. There is no `scalac`/`spark-submit` in the
+  image: Spark runs in-process in local mode (`master("local[*]")`), the
+  JVM needing Spark's `--add-opens` module flags (see
+  `tests/polyglot/spark/build.sbt`);
+- R: the Debian-layout r-base (`/usr/bin/R`, `/usr/bin/Rscript`); the site
+  library `/usr/local/lib/R/site-library` (testthat, renv) is owned by
+  `alissa`, so `install.packages()` and `renv::restore()` work without root,
+  and `/etc/R/Rprofile.site` makes the dated Posit Package Manager snapshot
+  the default repo (bookworm binaries — no compile for most packages;
+  r-base-dev is there for the ones that must build from source);
 - on `PATH` both via image `ENV` (daemon, `docker exec`, gosu) **and**
   `/etc/profile.d/loopwork-polyglot.sh` — tmux-spawned sessions are login
   shells, and Debian's `/etc/profile` resets `PATH`;
 - `GOTOOLCHAIN=local`: a `go.mod` asking for a newer Go fails loudly rather
   than downloading a toolchain mid-session. Per-user caches (`~/go`,
   `~/.cache/go-build`, `~/.gradle`, `~/.m2`, `~/.bundle`, `~/.cache/composer`,
-  `~/.nuget/packages`, `~/.dotnet`) live in the alissa home — not on the
-  `/workspace` volume, so a mount neither hides nor carries them.
+  `~/.nuget/packages`, `~/.dotnet`, `~/.sbt`, `~/.cache/coursier`,
+  `~/.cache/R/renv`) live in the alissa home — not on the `/workspace` volume,
+  so a mount neither hides nor carries them (and the pre-warmed sbt caches
+  are image content).
 
 **Opting in** (a leaf, i.e. a fleet): change the base pin to the `-polyglot`
 tag of the same version — nothing else in the leaf contract changes:
 
 ```dockerfile
-FROM ghcr.io/ali-fhr/alissa-loopwork-base:0.4.0-polyglot   # was :0.4.0
+FROM ghcr.io/ali-fhr/alissa-loopwork-base:0.5.0-polyglot   # was :0.5.0
 ```
 
 Adopting the variant is an **operator rollout decision**, made per fleet; the
-release that introduced it (0.3.0) and the one that added Ruby, PHP and .NET
-(0.4.0) rolled no fleet. A fleet already on `-polyglot` picks up the new
+release that introduced it (0.3.0), the one that added Ruby, PHP and .NET
+(0.4.0) and the one that added Scala/Spark and R (0.5.0) rolled no fleet. A fleet already on `-polyglot` picks up the new
 languages only when its leaf bumps the pin.
 
 ### The languages manifest
@@ -192,16 +216,19 @@ Node.js only.
 ```
 
 - `languages[].id` is the stable key: `python`, `javascript`, `c`, `cpp`,
-  `go`, `rust`, `java`, `kotlin`, `ruby`, `php`, `csharp`.
+  `go`, `rust`, `java`, `kotlin`, `scala`, `ruby`, `php`, `csharp`, `r`.
 - `version` is the primary toolchain's version (`toolchain` names it); `tools`
   maps every tool that serves the language to its version. `kotlin` has no
   `kotlinc` in the image — the compiler comes per project from the Kotlin
-  Gradle plugin — so its toolchain is Gradle (see its `note`).
+  Gradle plugin — so its toolchain is Gradle (see its `note`). Likewise
+  `scala`'s toolchain is sbt (`tools`: `sbt`, `jdk`): sbt resolves each
+  project's Scala and libraries, Spark included. `r` also carries
+  `packages` (`testthat`, `renv` versions).
 - `schema` bumps only on an incompatible change; new languages and new keys
   are additive. Each release's notes carry the full manifest.
 
 ```sh
-docker run --rm --entrypoint cat ghcr.io/ali-fhr/alissa-loopwork-base:0.4.0-polyglot \
+docker run --rm --entrypoint cat ghcr.io/ali-fhr/alissa-loopwork-base:0.5.0-polyglot \
     /usr/local/share/alissa/languages.json
 ```
 
@@ -236,6 +263,13 @@ curl -fsSL https://getcomposer.org/download/<ver>/composer.phar.sha256sum
 # .NET: the LTS channel's latest SDK + sha512 per arch
 curl -fsS https://builds.dotnet.microsoft.com/dotnet/release-metadata/releases-index.json | jq -r '.["releases-index"][] | select(.["release-type"]=="lts" and .["support-phase"]=="active") | "\(.["channel-version"]) \(.["latest-sdk"])"'
 curl -fsS https://builds.dotnet.microsoft.com/dotnet/release-metadata/<channel>/releases.json | jq -r '.releases[] | select(.sdk.version=="<sdk>") | .sdk.files[] | select((.rid=="linux-x64" or .rid=="linux-arm64") and (.name|endswith(".tar.gz"))) | "\(.rid) \(.hash)"'
+# sbt: latest non-prerelease runner + its sha256
+curl -fsS 'https://api.github.com/repos/sbt/sbt/releases?per_page=10' | jq -r '[.[] | select(.prerelease|not)][0].tag_name'
+curl -fsSL https://github.com/sbt/sbt/releases/download/v<ver>/sbt-<ver>.tgz.sha256
+# R: the r-base version CRAN carries for bookworm (R_VERSION is the full Debian version)
+curl -fsSL https://cloud.r-project.org/bin/linux/debian/bookworm-cran40/Packages | awk '/^Package: r-base-core$/{p=1} p&&/^Version:/{print $2; exit}'
+# testthat / renv in a PPM snapshot (CRAN_SNAPSHOT is the dated URL)
+curl -fsS https://packagemanager.posit.co/cran/__linux__/bookworm/<YYYY-MM-DD>/src/contrib/PACKAGES | awk '/^Package: (testthat|renv)$/{p=$2} p&&/^Version:/{print p, $2; p=""}'
 ```
 
 `TEMURIN_VERSION` is the release name without the `jdk-` prefix (e.g.
@@ -246,7 +280,13 @@ the latest patch of each PHP minor line, so the PHP patch moves with every
 build; `PHP_VERSION` pins the minor. A new .NET LTS channel also needs
 `tests/polyglot/dotnet/` moved to its `net<N>.0` target framework (and the
 contract smoke's `10.x` check). If a newer sury keyring is published, the
-build fails on its sha256 — re-check the key and re-pin.
+build fails on its sha256 — re-check the key and re-pin. CRAN's Debian repo
+lists only the current r-base build, so the exact `R_VERSION` pin fails the
+build loudly once CRAN replaces it (bookworm-cran40 has been frozen at 4.5.3
+since 2026-03) — re-pin from the command above. When bumping sbt, bump
+`sbt.version` in `tests/polyglot/{scala,spark}/project/build.properties` with
+it (the pre-warmed boot only serves that version); Spark's Scala version
+(`tests/polyglot/spark/build.sbt`) follows Spark's own `scala.version`.
 
 ## Building and testing locally
 
@@ -260,13 +300,15 @@ The smoke test (`tests/smoke.sh`) runs inside the container with no network and
 no tokens: toolchain versions, user/workspace shape, git rewrites, claude
 first-run seeding, ENV skeleton, entrypoint stub — and the variant check: on
 slim it asserts **none** of `gcc`/`g++`/`make`/`cmake`/`go`/`cargo`/`rustc`/
-`java`/`gradle`/`mvn` exist (so the base can't bloat by accident), on polyglot
+`java`/`gradle`/`mvn`/`sbt`/`R` exist (so the base can't bloat by accident), on polyglot
 that all of them are on the `alissa` session PATH and that the languages
 manifest lists them with the versions the live tools report. The polyglot
 variant also runs `tests/polyglot/smoke.sh`, which compiles and tests a tiny
 sample project per language as `alissa` (C via make, C++ via cmake + ctest,
 `go test`, `cargo test`, `gradle test`, `bundle exec rake test` (minitest),
-`composer install` + `phpunit`, `dotnet test` (xunit)); see
+`composer install` + `phpunit`, `dotnet test` (xunit), `sbt testFull` (ScalaTest,
+Scala 3) and a Spark local-mode word count (`sbt testFull`, Scala 2.13), and
+`testthat::test_dir` via `Rscript`); see
 `tests/polyglot/README.md`.
 
 CI also asserts that the polyglot variant leaves slim **byte-identical**:
@@ -318,6 +360,16 @@ Each entry records what the release's build snapshotted (the agent CLIs are
 unpinned, so the number is only known once the image is built — CI's smoke
 step prints them; see `tests/smoke.sh`).
 
+- **0.5.0** — the polyglot variant gains **Scala** via **sbt 2.0.10** (JDK 21
+  reused; sbt boot + coursier cache pre-warmed in the alissa home, ≈ 200 MB)
+  — proven by a ScalaTest build (Scala 3.10.0) and an **Apache Spark 4.2.0
+  local-mode** word count (Scala 2.13.18) — and **R 4.5.3** (CRAN's Debian
+  repo; r-base + r-base-dev) with **testthat 3.3.2** and **renv 1.3.1** (PPM
+  snapshot 2026-10-15), proven by a testthat run via `Rscript`; both are in
+  the languages manifest (`scala`, `r`). Polyglot size (linux/amd64,
+  CI-measured): ≈ 1.8 GB compressed / 4.3 GB uncompressed (0.4.0: ≈ 1.5 GB / 3.8 GB; slim unchanged at ≈ 464 MB / 1.3 GB). Slim's content is unchanged (CI asserts it
+  byte-identical to the base branch's slim); agent CLIs re-snapshotted as of
+  the build date. No fleet rolled.
 - **0.4.0** — the polyglot variant gains **Ruby 4.0.7** (+ Bundler 4.0.20),
   **PHP 8.5** (sury; mbstring, xml, curl, zip) + **Composer 2.10.3**, and the
   **.NET SDK 10.0.402** (LTS), each proven by a build-and-test smoke (minitest,
