@@ -3,7 +3,7 @@
 #   ghcr.io/ali-fhr/alissa-loopwork-base:X.Y.Z           +  :X.Y           +  :X
 #   ghcr.io/ali-fhr/alissa-loopwork-base:X.Y.Z-polyglot  +  :X.Y-polyglot  +  :X-polyglot
 # then writes the GitHub release vX.Y.Z with each variant's compressed size (as
-# the registry reports it) and the polyglot toolchain pins.
+# the registry reports it), the polyglot toolchain pins and its languages manifest.
 # Auth is the workflow's own GITHUB_TOKEN (packages: write; contents: write for
 # the release notes) — no extra secrets.
 #
@@ -100,6 +100,16 @@ jobs:
           -v "$PWD/tests/polyglot:/polyglot:ro"
           alissa-loopwork-base:smoke-polyglot /polyglot/smoke.sh
 
+      # Same gate as ci.yml: polyglot is slim + layers, never a rewrite of slim.
+      - name: Assert polyglot = slim + layers
+        run: |
+          set -euo pipefail
+          s="$(docker image inspect -f '{{json .RootFS.Layers}}' alissa-loopwork-base:smoke)"
+          p="$(docker image inspect -f '{{json .RootFS.Layers}}' alissa-loopwork-base:smoke-polyglot)"
+          jq -en --argjson s "$s" --argjson p "$p" \
+              '($p | length) > ($s | length) and $p[:($s | length)] == $s' > /dev/null \
+            || { echo "::error::the polyglot image's layer chain does not start with slim's"; exit 1; }
+
       - name: Compute image tags
         id: ver
         run: |
@@ -152,7 +162,7 @@ jobs:
           labels: |
             org.opencontainers.image.source=https://github.com/ali-fhr/alissa-loopwork
             org.opencontainers.image.title=alissa-loopwork-base (polyglot)
-            org.opencontainers.image.description=Loopwork base + C/C++, Go, Rust and Java/Kotlin toolchains
+            org.opencontainers.image.description=Loopwork base + C/C++, Go, Rust, Java/Kotlin, Ruby, PHP and .NET toolchains
             org.opencontainers.image.revision=${{ github.sha }}
           cache-from: |
             type=gha,scope=slim
@@ -188,7 +198,13 @@ jobs:
             echo
             echo "## Polyglot toolchains"
             echo
-            echo "Go $(arg GO_VERSION) · Rust $(arg RUST_VERSION) (rustup $(arg RUSTUP_VERSION)) · Temurin JDK $(arg TEMURIN_VERSION) · Gradle $(arg GRADLE_VERSION) · Maven $(arg MAVEN_VERSION) · gcc/g++/make/cmake/pkg-config/gdb from Debian bookworm."
+            echo "Go $(arg GO_VERSION) · Rust $(arg RUST_VERSION) (rustup $(arg RUSTUP_VERSION)) · Temurin JDK $(arg TEMURIN_VERSION) · Gradle $(arg GRADLE_VERSION) · Maven $(arg MAVEN_VERSION) · Ruby $(arg RUBY_VERSION) (+ Bundler) · PHP $(arg PHP_VERSION) (sury) + Composer $(arg COMPOSER_VERSION) · .NET SDK $(arg DOTNET_SDK_VERSION) · gcc/g++/make/cmake/pkg-config/gdb from Debian bookworm."
+            echo
+            echo "The exact toolchain versions are in the image's languages manifest, \`/usr/local/share/alissa/languages.json\`:"
+            echo
+            echo '```json'
+            docker run --rm --entrypoint cat alissa-loopwork-base:smoke-polyglot /usr/local/share/alissa/languages.json
+            echo '```'
             echo
             echo "Adopting the polyglot variant is an operator rollout decision: a leaf opts in by pinning the \`-polyglot\` tag (see README)."
           } > notes.md

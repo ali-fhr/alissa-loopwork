@@ -1,0 +1,9 @@
+# frozen_string_literal: true
+
+# The polyglot image's Ruby smoke sample: a gem-less lib (no gemspec) tested
+# with minitest through rake. Both are bundled gems of the image's Ruby, so
+# `bundle install --prefer-local` resolves them without a network round-trip.
+source "https://rubygems.org"
+
+gem "minitest", ">= 5.20"
+gem "rake", ">= 13.0"

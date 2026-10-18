@@ -43,7 +43,8 @@
 #
 # Two variants, one Dockerfile (see "Polyglot variant" at the bottom and the
 # README): `slim` is the base described above and stays the default target;
-# `polyglot` = slim + C/C++, Go, Rust and Java/Kotlin toolchains, published as
+# `polyglot` = slim + C/C++, Go, Rust, Java/Kotlin, Ruby, PHP and .NET toolchains
+# (+ the languages manifest /usr/local/share/alissa/languages.json), published as
 # the `-polyglot` tags. The polyglot stages add layers on top of slim and never
 # change it.
 #
@@ -78,6 +79,24 @@ ARG GRADLE_VERSION=9.8.1
 ARG GRADLE_SHA256=dce76f55f8e251a3a1f130eb120f30b3d271de2b76c9b0729d316b5a1b6dc01f
 ARG MAVEN_VERSION=3.10.0
 ARG MAVEN_SHA512=908b1501bfb420bf7c8affb855534a9c407fd6099367bfb9f2f2dcb8e9799102bffb84518cde74c679bd76870247c6528683abdd620581bffa90f95d92d175aa
+# Ruby — source tarball from cache.ruby-lang.org (sha256 per release in
+# /pub/ruby/index.txt), compiled in a throwaway stage; ships Bundler + the
+# bundled gems (minitest, rake, …) of that release.
+ARG RUBY_VERSION=4.0.7
+ARG RUBY_SHA256=911ace20f90d068ca0e4dda6d0e4f0f81e52e52f2dd4f4004c721e253412e82d
+# PHP — packages.sury.org, the Debian PHP maintainer's signed apt repo (bookworm
+# itself stops at 8.2). The repo carries only each minor line's latest patch,
+# so the pin is the MINOR line; the repo's signing keyring .deb is sha256-pinned.
+ARG PHP_VERSION=8.5
+ARG SURY_KEYRING_SHA256=7511384559c9ddf1d5ce5f60be429ae9d4e7d01d9480d6f1b7a30c0810cf8b60
+# Composer — getcomposer.org/download/<ver>/composer.phar (+ .sha256sum)
+ARG COMPOSER_VERSION=2.10.3
+ARG COMPOSER_SHA256=7a2d379d5b8ffdaa028580ef26494c36d2feef4b178d3dd1473a4dbc5e17c8d6
+# .NET SDK (LTS channel) — builds.dotnet.microsoft.com tarball, sha512 per arch
+# from release-metadata/<channel>/releases.json
+ARG DOTNET_SDK_VERSION=10.0.402
+ARG DOTNET_SHA512_AMD64=1904a98dda2db34ba78ba3c4fb1b224455329af91c341d83547843c1839e112b04ae699ee92fa2449a8f62249196a938723078c0c60b9f65c88539d5687729c2
+ARG DOTNET_SHA512_ARM64=db85ae85527251fbb1290720ac3bf324bb1d9eea74516ef291ed4bb1f8ff6ec63a17593367f49b456115e8b24ead6d0c2ece2801e501f36a6cd4444ed01a498f
 
 # Base is pinned to python 3.12 (matches the daemon repos' .python-version);
 # Node 22 is layered on via NodeSource. The daemons need python >= 3.11; the
@@ -343,6 +362,55 @@ RUN set -eux; \
         --default-toolchain "${RUST_VERSION}" --component clippy,rustfmt; \
     find "${RUSTUP_HOME}/downloads" "${RUSTUP_HOME}/tmp" -mindepth 1 -delete
 
+# Ruby is compiled here (same bookworm userland as the final stage, so it links
+# against the same libssl3/libyaml/zlib/libffi the final stage installs) into
+# /opt/ruby, which the final stage chowns to alissa: `gem install` and a plain
+# `bundle install` then work without root, and the gems stay off the volume.
+# Ruby's configure SKIPS an extension whose -dev package is missing instead of
+# failing, hence the explicit require check of the ones that need system libs.
+# No YJIT: it needs rustc at build time (a Rust pin bump would then rebuild Ruby).
+FROM fetch AS ruby-build
+ARG RUBY_VERSION
+ARG RUBY_SHA256
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        build-essential libssl-dev libyaml-dev zlib1g-dev libffi-dev; \
+    rm -rf /var/lib/apt/lists/*; \
+    curl -fsSLo ruby.tgz "https://cache.ruby-lang.org/pub/ruby/${RUBY_VERSION%.*}/ruby-${RUBY_VERSION}.tar.gz"; \
+    echo "${RUBY_SHA256}  ruby.tgz" | sha256sum -c -; \
+    tar -xzf ruby.tgz; \
+    cd "ruby-${RUBY_VERSION}"; \
+    ./configure --prefix=/opt/ruby --disable-install-doc; \
+    make -j"$(nproc)"; \
+    make install; \
+    /opt/ruby/bin/ruby -ropenssl -rpsych -rzlib -rbundler \
+        -e 'puts "ruby #{RUBY_VERSION}, bundler #{Bundler::VERSION}, #{OpenSSL::OPENSSL_LIBRARY_VERSION}"'
+
+FROM fetch AS composer-fetch
+ARG COMPOSER_VERSION
+ARG COMPOSER_SHA256
+RUN set -eux; \
+    curl -fsSLo composer.phar "https://getcomposer.org/download/${COMPOSER_VERSION}/composer.phar"; \
+    echo "${COMPOSER_SHA256}  composer.phar" | sha256sum -c -; \
+    install -m 0755 composer.phar /usr/local/bin/composer
+
+FROM fetch AS dotnet-fetch
+ARG TARGETARCH
+ARG DOTNET_SDK_VERSION
+ARG DOTNET_SHA512_AMD64
+ARG DOTNET_SHA512_ARM64
+RUN set -eux; \
+    case "${TARGETARCH:-amd64}" in \
+        amd64) arch=x64;   sha="${DOTNET_SHA512_AMD64}" ;; \
+        arm64) arch=arm64; sha="${DOTNET_SHA512_ARM64}" ;; \
+        *) echo "unsupported arch ${TARGETARCH}" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSLo dotnet.tgz "https://builds.dotnet.microsoft.com/dotnet/Sdk/${DOTNET_SDK_VERSION}/dotnet-sdk-${DOTNET_SDK_VERSION}-linux-${arch}.tar.gz"; \
+    echo "${sha}  dotnet.tgz" | sha512sum -c -; \
+    mkdir -p /opt/dotnet; \
+    tar -C /opt/dotnet -xzf dotnet.tgz
+
 FROM base AS polyglot
 # C / C++: gcc, g++, make (build-essential), cmake, pkg-config, gdb — from the
 # bookworm archive, so their versions move with Debian point releases (pinned
@@ -352,24 +420,59 @@ RUN set -eux; \
     apt-get install -y --no-install-recommends \
         build-essential cmake pkg-config gdb; \
     rm -rf /var/lib/apt/lists/*
+# PHP CLI + the common extensions (mbstring, xml — dom/xmlwriter/simplexml —,
+# curl, zip) from sury's signed repo. Only the php keyring is taken out of the
+# keyring .deb and bound to this one source (signed-by) — installing the .deb
+# would drop it into trusted.gpg.d, i.e. trust it for every apt source. Also
+# the runtime libs of the copied toolchains: libyaml (Ruby's psych) and libicu
+# (.NET globalization); the rest (libssl3, zlib, libffi, libstdc++) is present.
+ARG PHP_VERSION
+ARG SURY_KEYRING_SHA256
+RUN set -eux; \
+    curl -fsSLo /tmp/sury-keyring.deb https://packages.sury.org/debsuryorg-archive-keyring.deb; \
+    echo "${SURY_KEYRING_SHA256}  /tmp/sury-keyring.deb" | sha256sum -c -; \
+    dpkg-deb --fsys-tarfile /tmp/sury-keyring.deb \
+        | tar -xO ./usr/share/keyrings/deb.sury.org-php.gpg > /etc/apt/keyrings/sury-php.gpg; \
+    rm /tmp/sury-keyring.deb; \
+    chmod go+r /etc/apt/keyrings/sury-php.gpg; \
+    . /etc/os-release; \
+    echo "deb [signed-by=/etc/apt/keyrings/sury-php.gpg] https://packages.sury.org/php/ ${VERSION_CODENAME} main" \
+        > /etc/apt/sources.list.d/sury-php.list; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        "php${PHP_VERSION}-cli" "php${PHP_VERSION}-mbstring" "php${PHP_VERSION}-xml" \
+        "php${PHP_VERSION}-curl" "php${PHP_VERSION}-zip" unzip \
+        libyaml-0-2 libicu72; \
+    rm -rf /var/lib/apt/lists/*
 COPY --from=go-fetch     /opt/go     /opt/go
 COPY --from=jdk-fetch    /opt/java   /opt/java
 COPY --from=gradle-fetch /opt/gradle /opt/gradle
 COPY --from=maven-fetch  /opt/maven  /opt/maven
 COPY --from=rust-fetch   --chown=1000:1000 /opt/rust /opt/rust
+COPY --from=ruby-build   --chown=1000:1000 /opt/ruby /opt/ruby
+COPY --from=dotnet-fetch --chown=1000:1000 /opt/dotnet /opt/dotnet
+COPY --from=composer-fetch /usr/local/bin/composer /usr/local/bin/composer
 
 # ENV covers non-login processes (docker exec, gosu, the daemon itself). Login
 # shells — what tmux starts for worker sessions — run Debian's /etc/profile,
 # which RESETS PATH; the profile.d drop-in puts the toolchains back after it.
 # GOTOOLCHAIN=local: a go.mod asking for a newer Go fails loudly instead of
-# silently downloading a toolchain at test time.
+# silently downloading a toolchain at test time. The DOTNET_* knobs keep the
+# SDK quiet for unattended sessions: no telemetry, no first-run banner, no
+# dev-cert generation. Per-user caches (NuGet's ~/.nuget/packages, Composer's
+# ~/.cache/composer, Bundler's ~/.bundle) live in the alissa home, off the
+# /workspace volume.
 ENV JAVA_HOME=/opt/java/temurin-21 \
     GRADLE_HOME=/opt/gradle \
     MAVEN_HOME=/opt/maven \
     RUSTUP_HOME=/opt/rust/rustup \
     CARGO_HOME=/opt/rust/cargo \
     GOTOOLCHAIN=local \
-    PATH="/opt/rust/cargo/bin:/opt/go/bin:/opt/java/temurin-21/bin:/opt/gradle/bin:/opt/maven/bin:${PATH}"
+    DOTNET_ROOT=/opt/dotnet \
+    DOTNET_CLI_TELEMETRY_OPTOUT=1 \
+    DOTNET_NOLOGO=1 \
+    DOTNET_GENERATE_ASPNET_CERTIFICATE=false \
+    PATH="/opt/rust/cargo/bin:/opt/go/bin:/opt/java/temurin-21/bin:/opt/gradle/bin:/opt/maven/bin:/opt/ruby/bin:/opt/dotnet:${PATH}"
 COPY <<'EOF' /etc/profile.d/loopwork-polyglot.sh
 # loopwork polyglot variant: toolchains on PATH for login shells (tmux sessions).
 export JAVA_HOME=/opt/java/temurin-21
@@ -378,11 +481,98 @@ export MAVEN_HOME=/opt/maven
 export RUSTUP_HOME=/opt/rust/rustup
 export CARGO_HOME=/opt/rust/cargo
 export GOTOOLCHAIN=local
+export DOTNET_ROOT=/opt/dotnet
+export DOTNET_CLI_TELEMETRY_OPTOUT=1
+export DOTNET_NOLOGO=1
+export DOTNET_GENERATE_ASPNET_CERTIFICATE=false
 case ":$PATH:" in
     *:/opt/go/bin:*) ;;
-    *) PATH="/opt/rust/cargo/bin:/opt/go/bin:/opt/java/temurin-21/bin:/opt/gradle/bin:/opt/maven/bin:$PATH" ;;
+    *) PATH="/opt/rust/cargo/bin:/opt/go/bin:/opt/java/temurin-21/bin:/opt/gradle/bin:/opt/maven/bin:/opt/ruby/bin:/opt/dotnet:$PATH" ;;
 esac
 export PATH
+EOF
+
+# --- Languages manifest ----------------------------------------------------------
+# /usr/local/share/alissa/languages.json: which languages this image covers and
+# with which toolchain versions — read by Studio's boundary, so a new language
+# here needs no code change there. Every version is read from the INSTALLED
+# tool at build time (not from the pins above), so the manifest cannot drift
+# from the image; a tool that does not answer fails the build. The slim image
+# ships no manifest (its content stays exactly the base stage): absent manifest
+# = slim = python + node only. Schema: README "The languages manifest".
+# HOME is a throwaway dir so probing gradle/dotnet/composer leaves no root state.
+RUN <<'EOF'
+set -eu
+export HOME=/tmp/manifest-home
+mkdir -p /tmp/manifest-home /usr/local/share/alissa
+req() { # req <name> <value>: print value, fail the build if empty
+    [ -n "$2" ] || { echo "languages manifest: no version for $1" >&2; exit 1; }
+    printf '%s' "$2"
+}
+python="$(req python "$(python3 -c 'import platform; print(platform.python_version())')")"
+pip="$(req pip "$(python3 -m pip --version | awk '{print $2}')")"
+node="$(req node "$(node -p process.versions.node)")"
+npm="$(req npm "$(npm --version)")"
+gcc="$(req gcc "$(gcc -dumpfullversion)")"
+gxx="$(req g++ "$(g++ -dumpfullversion)")"
+make="$(req make "$(make --version | sed -n '1s/^GNU Make //p')")"
+cmake="$(req cmake "$(cmake --version | sed -n '1s/^cmake version //p')")"
+go="$(req go "$(go env GOVERSION | sed 's/^go//')")"
+rustc="$(req rustc "$(rustc --version | awk '{print $2}')")"
+cargo="$(req cargo "$(cargo --version | awk '{print $2}')")"
+rustup="$(req rustup "$(rustup --version 2>/dev/null | awk 'NR==1{print $2}')")"
+java="$(req java "$(java -version 2>&1 | sed -n '1s/.*version "\([^"]*\)".*/\1/p')")"
+gradle="$(req gradle "$(GRADLE_USER_HOME=/tmp/manifest-home/gradle gradle --version --no-daemon | sed -n 's/^Gradle //p')")"
+maven="$(req maven "$(mvn --version | awk 'NR==1{print $3}')")"
+ruby="$(req ruby "$(ruby -e 'print RUBY_VERSION')")"
+gem="$(req gem "$(gem --version)")"
+bundler="$(req bundler "$(ruby -rbundler -e 'print Bundler::VERSION')")"
+php="$(req php "$(php -r 'echo PHP_VERSION;')")"
+composer="$(req composer "$(COMPOSER_ALLOW_SUPERUSER=1 composer --version --no-ansi 2>/dev/null | sed -n 's/^Composer version \([^ ]*\).*/\1/p')")"
+phpext="$(php -r 'echo json_encode(array_map("strtolower", get_loaded_extensions()));')"
+dotnet="$(req dotnet-sdk "$(dotnet --version)")"
+dotnetrt="$(req dotnet-runtime "$(dotnet --list-runtimes | awk '$1=="Microsoft.NETCore.App"{v=$2} END{print v}')")"
+jq -n \
+    --arg python "$python" --arg pip "$pip" --arg node "$node" --arg npm "$npm" \
+    --arg gcc "$gcc" --arg gxx "$gxx" --arg make "$make" --arg cmake "$cmake" \
+    --arg go "$go" --arg rustc "$rustc" --arg cargo "$cargo" --arg rustup "$rustup" \
+    --arg java "$java" --arg gradle "$gradle" --arg maven "$maven" \
+    --arg ruby "$ruby" --arg gem "$gem" --arg bundler "$bundler" \
+    --arg php "$php" --arg composer "$composer" --argjson phpext "$phpext" \
+    --arg dotnet "$dotnet" --arg dotnetrt "$dotnetrt" \
+    '{
+      schema: 1,
+      image: "ghcr.io/ali-fhr/alissa-loopwork-base",
+      variant: "polyglot",
+      languages: [
+        {id: "python", name: "Python", toolchain: "cpython", version: $python,
+         tools: {python: $python, pip: $pip}},
+        {id: "javascript", name: "JavaScript (Node.js)", toolchain: "node", version: $node,
+         tools: {node: $node, npm: $npm}},
+        {id: "c", name: "C", toolchain: "gcc", version: $gcc,
+         tools: {gcc: $gcc, make: $make, cmake: $cmake}},
+        {id: "cpp", name: "C++", toolchain: "g++", version: $gxx,
+         tools: {"g++": $gxx, make: $make, cmake: $cmake}},
+        {id: "go", name: "Go", toolchain: "go", version: $go,
+         tools: {go: $go}},
+        {id: "rust", name: "Rust", toolchain: "rustc", version: $rustc,
+         tools: {rustc: $rustc, cargo: $cargo, rustup: $rustup}},
+        {id: "java", name: "Java", toolchain: "temurin-jdk", version: $java,
+         tools: {jdk: $java, gradle: $gradle, maven: $maven}},
+        {id: "kotlin", name: "Kotlin", toolchain: "gradle", version: $gradle,
+         tools: {gradle: $gradle, jdk: $java},
+         note: "no kotlinc in the image: the Kotlin compiler is resolved per project by the Kotlin Gradle plugin"},
+        {id: "ruby", name: "Ruby", toolchain: "ruby", version: $ruby,
+         tools: {ruby: $ruby, gem: $gem, bundler: $bundler}},
+        {id: "php", name: "PHP", toolchain: "php-cli", version: $php,
+         tools: {php: $php, composer: $composer}, extensions: $phpext},
+        {id: "csharp", name: "C#", toolchain: "dotnet-sdk", version: $dotnet,
+         tools: {"dotnet-sdk": $dotnet, "dotnet-runtime": $dotnetrt}}
+      ]
+    }' > /usr/local/share/alissa/languages.json
+chmod 0644 /usr/local/share/alissa/languages.json
+rm -rf /tmp/manifest-home /root/.m2 /root/.gradle /root/.dotnet /root/.nuget
+cat /usr/local/share/alissa/languages.json
 EOF
 
 # =============================================================================

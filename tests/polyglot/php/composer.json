@@ -1,0 +1,25 @@
+{
+    "name": "alissa-loopwork/polyglot-smoke",
+    "description": "The polyglot image's PHP smoke sample.",
+    "type": "project",
+    "license": "Apache-2.0",
+    "require": {
+        "php": ">=8.4.1"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^13.4"
+    },
+    "autoload": {
+        "psr-4": {
+            "Smoke\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "Smoke\\Tests\\": "tests/"
+        }
+    },
+    "config": {
+        "sort-packages": true
+    }
+}

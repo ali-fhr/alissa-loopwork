@@ -6,9 +6,12 @@
 # tmux-spawned worker session gets (Debian's /etc/profile resets PATH; the
 # image's /etc/profile.d drop-in must put the toolchains back).
 #
-# Unlike tests/smoke.sh this needs NETWORK for one step: `gradle test` resolves
-# the Kotlin Gradle plugin and kotlin-test/JUnit from the Gradle Plugin Portal
-# and Maven Central. C, C++, Go and Rust are offline (no third-party deps).
+# Unlike tests/smoke.sh this needs NETWORK for the package-manager steps:
+# `gradle test` (Kotlin Gradle plugin + kotlin-test/JUnit from the Gradle Plugin
+# Portal and Maven Central), `bundle install` (rubygems.org metadata; the gems
+# themselves are Ruby's bundled minitest/rake), `composer install` (PHPUnit from
+# Packagist) and `dotnet test` (xunit.v3 from nuget.org). C, C++, Go and Rust
+# are offline (no third-party deps).
 set -euo pipefail
 
 SRC="${POLYGLOT_SRC:-/polyglot}"
@@ -34,6 +37,9 @@ run "Go (go test)"        go     'go vet ./... && go test ./...'
 run "Rust (cargo test)"   rust   'cargo test && cargo clippy -- -D warnings && cargo fmt --check'
 run "Kotlin/Java (gradle test)" kotlin 'gradle test --no-daemon --console=plain'
 run "Maven runs"          .      'mvn --version'
+run "Ruby (bundler + rake/minitest)" ruby 'bundle install --prefer-local && bundle exec rake test'
+run "PHP (composer + phpunit)" php 'composer validate --no-check-publish && composer install --no-interaction --no-progress && vendor/bin/phpunit'
+run ".NET (dotnet test, xunit)" dotnet 'dotnet test --project Adder.Tests/Adder.Tests.csproj'
 
 if [ "$fail" -ne 0 ]; then
     echo "polyglot smoke: FAILED" >&2
