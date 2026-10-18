@@ -381,9 +381,10 @@ step prints them; see `tests/smoke.sh`).
   integration check's screenshots (studio.alissa.app
   `docs/design/alissa-build-integration-check.md` §8). The smoke launches it
   headless and asserts 1440- and 390-wide PNGs. This is the first release that
-  changes slim on purpose (PR labelled `slim-change`). Size: estimated
-  ≈ +340 MB uncompressed (headless shell ≈ 273 MB, libraries + fonts ≈ 50 MB,
-  playwright + ffmpeg ≈ 15 MB); CI's measured numbers are in the PR. Agent CLIs
+  changes slim on purpose (PR labelled `slim-change`). Sizes (linux/amd64,
+  CI-measured): slim ≈ 599 MB compressed / 1.7 GB uncompressed (0.5.0: ≈ 464 MB
+  / 1.3 GB, so ≈ +135 MB compressed — the headless shell alone is ≈ 273 MB
+  unpacked), polyglot ≈ 1.9 GB / 4.6 GB (0.5.0: ≈ 1.8 GB / 4.3 GB). Agent CLIs
   re-snapshotted as of the build date. No fleet rolled.
 - **0.5.0** — the polyglot variant gains **Scala** via **sbt 2.0.10** (JDK 21
   reused; sbt boot + coursier cache pre-warmed in the alissa home, ≈ 200 MB)
