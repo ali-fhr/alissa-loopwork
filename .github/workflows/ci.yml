@@ -1,6 +1,9 @@
 # PR / main gate: build both image variants (slim, polyglot) and run their
 # smokes — the offline contract smoke on each, plus the polyglot per-language
-# build-and-test smoke (tests/polyglot/, needs network for gradle). No push — publishing happens via release.yml / publish.yml.
+# build-and-test smoke (tests/polyglot/, needs network for the package managers),
+# and the assertions that slim stays byte-identical (polyglot = slim + layers;
+# on PRs, slim = the base branch's slim). No push — publishing happens via
+# release.yml / publish.yml.
 # PRs additionally get the version guard: a change to any image input MUST come
 # with a VERSION bump (that bump is what releases it on merge — see release.yml),
 # and a changed VERSION must not collide with an existing tag (which would merge
@@ -110,11 +113,49 @@ jobs:
           -v "$PWD/tests/smoke.sh:/smoke.sh:ro"
           alissa-loopwork-base:ci-polyglot /smoke.sh
 
-      - name: Polyglot build-and-test smoke (C, C++, Go, Rust, Kotlin/Java)
+      - name: Polyglot build-and-test smoke (C, C++, Go, Rust, Kotlin/Java, Ruby, PHP, .NET)
         run: >
           docker run --rm --entrypoint /bin/bash
           -v "$PWD/tests/polyglot:/polyglot:ro"
           alissa-loopwork-base:ci-polyglot /polyglot/smoke.sh
+
+      # The slim content must never move because of the polyglot variant.
+      # (1) polyglot = slim + layers: its layer chain starts with slim's, so no
+      # polyglot instruction rewrote a slim layer.
+      - name: Assert polyglot = slim + layers
+        run: |
+          set -euo pipefail
+          s="$(docker image inspect -f '{{json .RootFS.Layers}}' alissa-loopwork-base:ci)"
+          p="$(docker image inspect -f '{{json .RootFS.Layers}}' alissa-loopwork-base:ci-polyglot)"
+          jq -en --argjson s "$s" --argjson p "$p" \
+              '($p | length) > ($s | length) and $p[:($s | length)] == $s' > /dev/null \
+            || { echo "::error::the polyglot image's layer chain does not start with slim's"; exit 1; }
+          echo "polyglot = slim ($(jq length <<<"$s") layers) + $(( $(jq length <<<"$p") - $(jq length <<<"$s") )) layers"
+
+      # (2) On PRs: slim is byte-identical to the base branch's slim. The base
+      # branch's Dockerfile is built in THIS builder with the same SNAPSHOT_STAMP,
+      # so an unchanged base stage resolves to the very same cached layers (same
+      # diff IDs = same bytes, the unpinned CLI layers included) and the same
+      # runtime config. A PR that changes slim on purpose carries the
+      # `slim-change` label, which skips this step.
+      - name: Assert slim unchanged vs the base branch
+        if: github.event_name == 'pull_request' && !contains(github.event.pull_request.labels.*.name, 'slim-change')
+        run: |
+          set -euo pipefail
+          git fetch --no-tags --depth=1 origin "${{ github.base_ref }}"
+          git worktree add --detach "$RUNNER_TEMP/base-ref" FETCH_HEAD
+          docker buildx build --target slim \
+              --build-arg SNAPSHOT_STAMP=${{ github.run_id }} \
+              --load -t alissa-loopwork-base:ci-base-ref "$RUNNER_TEMP/base-ref"
+          shape() { # shape <image>: layer diff IDs + the runtime config the leaves inherit
+            docker image inspect "$1" | jq -S '.[0] | {layers: .RootFS.Layers,
+                config: (.Config | {Env, Entrypoint, Cmd, WorkingDir, User, ExposedPorts, Volumes})}'
+          }
+          if ! diff <(shape alissa-loopwork-base:ci-base-ref) <(shape alissa-loopwork-base:ci); then
+            echo "::error::slim differs from ${{ github.base_ref }}'s slim (diff above: base branch < > this PR). If that is intended, label the PR slim-change."
+            exit 1
+          fi
+          echo "slim unchanged vs ${{ github.base_ref }}: $(shape alissa-loopwork-base:ci | jq '.layers | length') identical layers, same config"
 
       # Informational: what each variant weighs. Uncompressed = docker's image
       # size; compressed ≈ gzip of `docker save` (the registry's exact number

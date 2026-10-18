@@ -98,7 +98,8 @@ ghcr.io/ali-fhr/alissa-loopwork-base:X.Y.Z-polyglot     (+ :X.Y-polyglot, :X-pol
 ```
 
 The same base **plus compilers**, so sessions can build and test C, C++, Go,
-Rust and Java/Kotlin before opening a PR (and the reviewer can re-run them).
+Rust, Java/Kotlin, Ruby, PHP and .NET (C#) before opening a PR (and the
+reviewer can re-run them).
 It is the `polyglot` target of the same `Dockerfile` — slim + toolchain
 layers, nothing in the slim layers changes — and is published by the same
 release, smoke-gated, next to the slim tags.
@@ -107,6 +108,8 @@ release, smoke-gated, next to the slim tags.
 (ours and clients'), and the toolchains add ~1.7 GB (≈ 0.75 GB compressed)
 that most leaves never use. Paying that on every pull, every fleet, for a capability only some
 fleets need is the wrong default; the variant makes it opt-in per fleet.
+(Those figures are 0.3.0's; the measured size of the current variant is in
+the table below.)
 
 | | slim (default) | polyglot |
 |---|---|---|
@@ -117,35 +120,90 @@ fleets need is the wrong default; the variant makes it opt-in per fleet.
 | Java: Eclipse Temurin JDK 21 LTS | — | **21.0.12.1+1** (sha256-pinned) |
 | Gradle (Kotlin builds through Gradle's Kotlin plugin) | — | **9.8.1** (sha256-pinned) |
 | Maven | — | **3.10.0** (sha512-pinned) |
-| size, linux/amd64 (compressed ≈ / uncompressed) | ≈ 464 MB / 1.3 GB | ≈ 1.2 GB / 3.0 GB |
+| Ruby (+ Bundler, RubyGems, the bundled minitest/rake) | — | **4.0.7**, compiled from the sha256-pinned source tarball; Bundler 4.0.20 |
+| PHP CLI + mbstring, xml (dom, xmlwriter, …), curl, zip | — | **8.5** line from packages.sury.org (signed apt repo; keyring sha256-pinned) |
+| Composer | — | **2.10.3** (sha256-pinned) |
+| .NET SDK (C#), LTS channel | — | **10.0.402** (runtime 10.0.13; sha512-pinned) |
+| languages manifest `/usr/local/share/alissa/languages.json` | — (absent) | ✓ (see below) |
+| size, linux/amd64 (compressed ≈ / uncompressed) | ≈ 464 MB / 1.3 GB | 0.3.0: ≈ 1.2 GB / 3.0 GB · 0.4.0: SIZE_TBD |
 
-Sizes are CI-measured for 0.3.0 (compressed ≈ gzip of `docker save`); the
-exact registry numbers for every release are in its GitHub release notes
-(`publish.yml` writes them).
+Sizes are CI-measured (compressed ≈ gzip of `docker save`, from CI's "Image
+sizes" step); the exact registry numbers for every release are in its GitHub
+release notes (`publish.yml` writes them).
 
 Layout, all usable by the unprivileged `alissa` user:
 
 - toolchains under `/opt` (`/opt/go`, `/opt/java/temurin-21`, `/opt/gradle`,
-  `/opt/maven`, `/opt/rust`) — off the `/workspace` volume, so a mount never
-  hides them;
+  `/opt/maven`, `/opt/rust`, `/opt/ruby`, `/opt/dotnet`) — off the
+  `/workspace` volume, so a mount never hides them; PHP is the Debian-layout
+  package (`/usr/bin/php`), Composer is `/usr/local/bin/composer`;
 - Rust: `RUSTUP_HOME=/opt/rust/rustup`, `CARGO_HOME=/opt/rust/cargo`, owned by
   `alissa` so `rustup component add` / `cargo install` work without root;
+- Ruby: `/opt/ruby` is owned by `alissa`, so `gem install` and a plain
+  `bundle install` write the image's gem dir without root (no YJIT: it would
+  need rustc at Ruby's build time);
+- .NET: `DOTNET_ROOT=/opt/dotnet`, owned by `alissa` (so `dotnet workload`
+  works without root), with `DOTNET_CLI_TELEMETRY_OPTOUT=1`, `DOTNET_NOLOGO=1`
+  and `DOTNET_GENERATE_ASPNET_CERTIFICATE=false` for unattended sessions;
 - on `PATH` both via image `ENV` (daemon, `docker exec`, gosu) **and**
   `/etc/profile.d/loopwork-polyglot.sh` — tmux-spawned sessions are login
   shells, and Debian's `/etc/profile` resets `PATH`;
 - `GOTOOLCHAIN=local`: a `go.mod` asking for a newer Go fails loudly rather
   than downloading a toolchain mid-session. Per-user caches (`~/go`,
-  `~/.cache/go-build`, `~/.gradle`, `~/.m2`) live in the alissa home.
+  `~/.cache/go-build`, `~/.gradle`, `~/.m2`, `~/.bundle`, `~/.cache/composer`,
+  `~/.nuget/packages`, `~/.dotnet`) live in the alissa home — not on the
+  `/workspace` volume, so a mount neither hides nor carries them.
 
 **Opting in** (a leaf, i.e. a fleet): change the base pin to the `-polyglot`
 tag of the same version — nothing else in the leaf contract changes:
 
 ```dockerfile
-FROM ghcr.io/ali-fhr/alissa-loopwork-base:0.3.0-polyglot   # was :0.3.0
+FROM ghcr.io/ali-fhr/alissa-loopwork-base:0.4.0-polyglot   # was :0.4.0
 ```
 
 Adopting the variant is an **operator rollout decision**, made per fleet; the
-release that introduced it (0.3.0) rolled no fleet.
+release that introduced it (0.3.0) and the one that added Ruby, PHP and .NET
+(0.4.0) rolled no fleet. A fleet already on `-polyglot` picks up the new
+languages only when its leaf bumps the pin.
+
+### The languages manifest
+
+The polyglot image ships `/usr/local/share/alissa/languages.json`, so Studio's
+boundary can read which languages a fleet's image covers without a code change
+per language. It is generated at **build time from the installed tools** (not
+from the pins), so it cannot drift from the image, and the contract smoke
+cross-checks it against the live tools. The slim image ships **no** manifest —
+its content stays exactly the base — so *absent* means slim: Python and
+Node.js only.
+
+```json
+{
+  "schema": 1,
+  "image": "ghcr.io/ali-fhr/alissa-loopwork-base",
+  "variant": "polyglot",
+  "languages": [
+    {"id": "ruby", "name": "Ruby", "toolchain": "ruby", "version": "4.0.7",
+     "tools": {"ruby": "4.0.7", "gem": "…", "bundler": "4.0.20"}},
+    {"id": "php", "name": "PHP", "toolchain": "php-cli", "version": "8.5.…",
+     "tools": {"php": "8.5.…", "composer": "2.10.3"}, "extensions": ["core", "…"]},
+    …
+  ]
+}
+```
+
+- `languages[].id` is the stable key: `python`, `javascript`, `c`, `cpp`,
+  `go`, `rust`, `java`, `kotlin`, `ruby`, `php`, `csharp`.
+- `version` is the primary toolchain's version (`toolchain` names it); `tools`
+  maps every tool that serves the language to its version. `kotlin` has no
+  `kotlinc` in the image — the compiler comes per project from the Kotlin
+  Gradle plugin — so its toolchain is Gradle (see its `note`).
+- `schema` bumps only on an incompatible change; new languages and new keys
+  are additive. Each release's notes carry the full manifest.
+
+```sh
+docker run --rm --entrypoint cat ghcr.io/ali-fhr/alissa-loopwork-base:0.4.0-polyglot \
+    /usr/local/share/alissa/languages.json
+```
 
 ### Bumping a polyglot toolchain
 
@@ -167,12 +225,28 @@ curl -fsS https://services.gradle.org/versions/current | jq -r .version
 curl -fsSL https://services.gradle.org/distributions/gradle-<ver>-bin.zip.sha256
 # Maven
 curl -fsS https://archive.apache.org/dist/maven/maven-3/<ver>/binaries/apache-maven-<ver>-bin.tar.gz.sha512
+# Ruby: version + sha256 of the .tar.gz (columns: name, url, sha1, sha256, sha512)
+curl -fsS https://cache.ruby-lang.org/pub/ruby/index.txt | grep -E '^ruby-[0-9.]+\s.*\.tar\.gz' | tail -3
+# PHP: the minor lines sury carries for bookworm; keyring .deb sha256
+curl -fsS https://packages.sury.org/php/dists/bookworm/main/binary-amd64/Packages.gz | gunzip | grep -E '^Package: php8\.[0-9]+-cli$'
+curl -fsSL https://packages.sury.org/debsuryorg-archive-keyring.deb | sha256sum
+# Composer: latest stable + its sha256
+curl -fsS https://getcomposer.org/versions | jq -r '.stable[0].version'
+curl -fsSL https://getcomposer.org/download/<ver>/composer.phar.sha256sum
+# .NET: the LTS channel's latest SDK + sha512 per arch
+curl -fsS https://builds.dotnet.microsoft.com/dotnet/release-metadata/releases-index.json | jq -r '.["releases-index"][] | select(.["release-type"]=="lts" and .["support-phase"]=="active") | "\(.["channel-version"]) \(.["latest-sdk"])"'
+curl -fsS https://builds.dotnet.microsoft.com/dotnet/release-metadata/<channel>/releases.json | jq -r '.releases[] | select(.sdk.version=="<sdk>") | .sdk.files[] | select((.rid=="linux-x64" or .rid=="linux-arm64") and (.name|endswith(".tar.gz"))) | "\(.rid) \(.hash)"'
 ```
 
 `TEMURIN_VERSION` is the release name without the `jdk-` prefix (e.g.
 `21.0.12.1+1`). The C/C++ tools come from the Debian archive and move with
 the base OS. If you bump Gradle, check the Kotlin plugin version in
-`tests/polyglot/kotlin/build.gradle.kts` still supports it.
+`tests/polyglot/kotlin/build.gradle.kts` still supports it. sury keeps only
+the latest patch of each PHP minor line, so the PHP patch moves with every
+build; `PHP_VERSION` pins the minor. A new .NET LTS channel also needs
+`tests/polyglot/dotnet/` moved to its `net<N>.0` target framework (and the
+contract smoke's `10.x` check). If a newer sury keyring is published, the
+build fails on its sha256 — re-check the key and re-pin.
 
 ## Building and testing locally
 
@@ -187,10 +261,20 @@ no tokens: toolchain versions, user/workspace shape, git rewrites, claude
 first-run seeding, ENV skeleton, entrypoint stub — and the variant check: on
 slim it asserts **none** of `gcc`/`g++`/`make`/`cmake`/`go`/`cargo`/`rustc`/
 `java`/`gradle`/`mvn` exist (so the base can't bloat by accident), on polyglot
-that all of them are on the `alissa` session PATH. The polyglot variant also
-runs `tests/polyglot/smoke.sh`, which compiles and tests a tiny sample project
-per language as `alissa` (C via make, C++ via cmake + ctest, `go test`,
-`cargo test`, `gradle test`); see `tests/polyglot/README.md`.
+that all of them are on the `alissa` session PATH and that the languages
+manifest lists them with the versions the live tools report. The polyglot
+variant also runs `tests/polyglot/smoke.sh`, which compiles and tests a tiny
+sample project per language as `alissa` (C via make, C++ via cmake + ctest,
+`go test`, `cargo test`, `gradle test`, `bundle exec rake test` (minitest),
+`composer install` + `phpunit`, `dotnet test` (xunit)); see
+`tests/polyglot/README.md`.
+
+CI also asserts that the polyglot variant leaves slim **byte-identical**:
+polyglot's layer chain must start with slim's (CI, publish, and
+`tests/run.sh all`), and on every PR the branch's slim must have the same layer
+diff IDs and runtime config as the base branch's slim built in the same builder
+with the same snapshot stamp. A PR that changes slim on purpose carries the
+`slim-change` label to skip that second check.
 
 ## Releasing
 
@@ -234,6 +318,14 @@ Each entry records what the release's build snapshotted (the agent CLIs are
 unpinned, so the number is only known once the image is built — CI's smoke
 step prints them; see `tests/smoke.sh`).
 
+- **0.4.0** — the polyglot variant gains **Ruby 4.0.7** (+ Bundler 4.0.20),
+  **PHP 8.5** (sury; mbstring, xml, curl, zip) + **Composer 2.10.3**, and the
+  **.NET SDK 10.0.402** (LTS), each proven by a build-and-test smoke (minitest,
+  PHPUnit, xunit) as `alissa`; plus the **languages manifest**
+  `/usr/local/share/alissa/languages.json` covering every polyglot language.
+  Polyglot compressed size (linux/amd64, CI-measured): SIZE_TBD. Slim's
+  content is unchanged (CI asserts it byte-identical to the base branch's slim); agent CLIs
+  re-snapshotted as of the build date. No fleet rolled.
 - **0.3.0** — adds the **polyglot variant** (`:0.3.0-polyglot`, see "The
   polyglot variant"): C/C++ (build-essential, cmake, pkg-config, gdb), Go
   1.27.2, Rust 1.99.1 (rustup 1.29.1), Temurin JDK 21.0.12.1+1, Gradle 9.8.1,

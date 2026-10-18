@@ -29,3 +29,19 @@ for VARIANT in $VARIANTS; do
             "$IMAGE" /polyglot/smoke.sh
     fi
 done
+
+# Both variants built: assert polyglot = slim + layers (its layer chain starts
+# with slim's), the same gate ci.yml and publish.yml run. Needs jq on the host.
+case " $VARIANTS " in
+    *" slim "*" polyglot "*)
+        s="$(docker image inspect -f '{{json .RootFS.Layers}}' alissa-loopwork-base:smoke-slim)"
+        p="$(docker image inspect -f '{{json .RootFS.Layers}}' alissa-loopwork-base:smoke-polyglot)"
+        if jq -en --argjson s "$s" --argjson p "$p" \
+            '($p | length) > ($s | length) and $p[:($s | length)] == $s' > /dev/null; then
+            echo "ok   polyglot = slim + layers"
+        else
+            echo "FAIL polyglot's layer chain does not start with slim's" >&2
+            exit 1
+        fi
+        ;;
+esac
