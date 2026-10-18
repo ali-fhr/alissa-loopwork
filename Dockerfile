@@ -22,6 +22,8 @@
 #
 # What the base provides (and leaves must NOT re-do):
 #   * python 3.12 + Node 22 + gh + git + tmux + tini + gosu (+ firewall tools)
+#   * a pinned headless Chromium (Playwright's chromium headless shell + the
+#     system libraries it needs), for headless screenshots
 #   * the agent CLIs the worker can spawn — claude-code (+ first-run
 #     pre-seeding), codex, and pi — one image for all three
 #   * the alissa CLI (worker, tmux queue, tasks) on the `alissa` user's PATH
@@ -150,6 +152,54 @@ RUN set -eux; \
     curl -fsSL "https://deb.nodesource.com/setup_${NODE_MAJOR}.x" | bash -; \
     apt-get install -y --no-install-recommends gh nodejs; \
     rm -rf /var/lib/apt/lists/*
+
+# --- Headless Chromium (screenshots for the Alissa Build integration check) ----
+# The integration check drives a milestone's screens headlessly at 1440 and 390
+# wide (studio.alissa.app docs/design/alissa-build-integration-check.md §8);
+# without a browser here every check would spend its first minutes installing
+# one. PINNED, unlike the agent CLIs: the Playwright version fixes the Chromium
+# revision (1.64.1 -> chromium_headless_shell-1248), so it sits above
+# SNAPSHOT_STAMP and only a pin bump rebuilds it.
+#   * playwright (global npm, `playwright` CLI) + its chromium HEADLESS SHELL
+#     only (--only-shell: no headed Chrome, no xvfb — the seat has no display)
+#   * the system libraries are Playwright's own debian12 `chromium` list (its
+#     nativeDeps table for this version) + fontconfig and the Liberation and
+#     Noto Color Emoji fonts, so pages render with metric-compatible fonts
+#     instead of tofu. The ldd check fails the build if a Playwright bump needs
+#     a library this list lacks.
+#   * PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright (shared, off the volume),
+#     owned by alissa (uid 1000) like /opt/rust: a project pinning the SAME
+#     Playwright finds the browser with no download, and a project on another
+#     version can `npx playwright install chromium` without root.
+#   * /usr/local/bin/chrome-headless-shell: a stable path for non-Playwright
+#     drivers (puppeteer-core's executablePath, `--screenshot` one-liners).
+#     Launched directly in a container it needs --no-sandbox (Playwright passes
+#     it itself); a large page may also want --disable-dev-shm-usage (docker's
+#     default /dev/shm is 64 MB).
+ARG PLAYWRIGHT_VERSION=1.64.1
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
+RUN set -eux; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        libasound2 libatk-bridge2.0-0 libatk1.0-0 libatspi2.0-0 libcairo2 \
+        libcups2 libdbus-1-3 libdrm2 libgbm1 libglib2.0-0 libnspr4 libnss3 \
+        libpango-1.0-0 libx11-6 libxcb1 libxcomposite1 libxdamage1 libxext6 \
+        libxfixes3 libxkbcommon0 libxrandr2 \
+        fontconfig fonts-liberation fonts-noto-color-emoji; \
+    rm -rf /var/lib/apt/lists/*; \
+    npm install -g "playwright@${PLAYWRIGHT_VERSION}"; \
+    npm cache clean --force; \
+    playwright install --only-shell chromium; \
+    shell="$(find "${PLAYWRIGHT_BROWSERS_PATH}" -path '*/chromium_headless_shell-*/*' -type f -name chrome-headless-shell)"; \
+    if [ -z "$shell" ] || [ "$(echo "$shell" | wc -l)" != 1 ] || [ ! -x "$shell" ]; then \
+        echo "expected exactly one chrome-headless-shell, got: ${shell:-none}" >&2; exit 1; \
+    fi; \
+    if ldd "$shell" | grep 'not found'; then \
+        echo "chrome-headless-shell is missing system libraries (above)" >&2; exit 1; \
+    fi; \
+    ln -s "$shell" /usr/local/bin/chrome-headless-shell; \
+    chown -R 1000:1000 "${PLAYWRIGHT_BROWSERS_PATH}"; \
+    chrome-headless-shell --no-sandbox --version
 
 # --- Agent CLIs (what the worker can spawn) -----------------------------------
 # One image, three agents:

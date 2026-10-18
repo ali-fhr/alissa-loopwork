@@ -33,6 +33,18 @@ by bumping one pinned base tag.
     now: auth is runtime env (`OPENAI_API_KEY` / provider keys), and their
     headless first-run seeding is deferred until a leaf actually wires them
     into a worker profile (`agents.yaml`)
+- a **headless Chromium**, pinned: Playwright **1.64.1** (global npm,
+  `playwright` CLI) with its chromium **headless shell** (Chrome for Testing
+  156.0.8078.4, revision 1248) in `PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright`
+  (owned by `alissa`), its system libraries, fontconfig and the Liberation +
+  Noto Color Emoji fonts — so a session (the Alissa Build integration check's
+  screenshots at 1440 and 390 wide) launches it with no install step. A project
+  pinning the same Playwright finds it with no download; other drivers
+  (puppeteer-core's `executablePath`, `--screenshot` one-liners) use the stable
+  path `/usr/local/bin/chrome-headless-shell` and pass `--no-sandbox` (and
+  `--disable-dev-shm-usage` for large pages: docker's `/dev/shm` is 64 MB).
+  Pinned on purpose, unlike the agent CLIs: bump `PLAYWRIGHT_VERSION` in the
+  Dockerfile to move the browser
 - the **alissa CLI** on the `alissa` user's PATH (worker, tmux queue, tasks)
 - non-root **`alissa` user (uid 1000)** + `/workspace` mount point, with the
   start-as-root → entrypoint chowns the volume → gosu-drop contract
@@ -298,7 +310,10 @@ tests/run.sh all        # both
 
 The smoke test (`tests/smoke.sh`) runs inside the container with no network and
 no tokens: toolchain versions, user/workspace shape, git rewrites, claude
-first-run seeding, ENV skeleton, entrypoint stub — and the variant check: on
+first-run seeding, ENV skeleton, entrypoint stub, a real headless Chromium
+launch (as `alissa`, a local page rendered to PNGs asserted 1440 and 390 px
+wide, through Playwright and through `chrome-headless-shell --screenshot`) —
+and the variant check: on
 slim it asserts **none** of `gcc`/`g++`/`make`/`cmake`/`go`/`cargo`/`rustc`/
 `java`/`gradle`/`mvn`/`sbt`/`R` exist (so the base can't bloat by accident), on polyglot
 that all of them are on the `alissa` session PATH and that the languages
@@ -360,6 +375,16 @@ Each entry records what the release's build snapshotted (the agent CLIs are
 unpinned, so the number is only known once the image is built — CI's smoke
 step prints them; see `tests/smoke.sh`).
 
+- **0.6.0** — the base (slim, and so polyglot) gains a pinned **headless
+  Chromium**: Playwright 1.64.1 + its chromium headless shell (Chrome for
+  Testing 156.0.8078.4) and the libraries/fonts it needs, for the Alissa Build
+  integration check's screenshots (studio.alissa.app
+  `docs/design/alissa-build-integration-check.md` §8). The smoke launches it
+  headless and asserts 1440- and 390-wide PNGs. This is the first release that
+  changes slim on purpose (PR labelled `slim-change`). Size: estimated
+  ≈ +340 MB uncompressed (headless shell ≈ 273 MB, libraries + fonts ≈ 50 MB,
+  playwright + ffmpeg ≈ 15 MB); CI's measured numbers are in the PR. Agent CLIs
+  re-snapshotted as of the build date. No fleet rolled.
 - **0.5.0** — the polyglot variant gains **Scala** via **sbt 2.0.10** (JDK 21
   reused; sbt boot + coursier cache pre-warmed in the alissa home, ≈ 200 MB)
   — proven by a ScalaTest build (Scala 3.10.0) and an **Apache Spark 4.2.0
