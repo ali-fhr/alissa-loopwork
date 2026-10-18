@@ -79,7 +79,7 @@ check "stub exits nonzero"        sh -c '! /usr/local/bin/entrypoint.sh'
 # bare run asserts the slim contract). Checked in the alissa user's LOGIN shell
 # too — that is the PATH a tmux-spawned session sees (Debian's /etc/profile
 # resets PATH, so ENV alone would not prove it).
-TOOLCHAIN_BINS="gcc g++ cc c++ make cmake go gofmt rustup rustc cargo java javac gradle mvn ruby gem bundle php composer dotnet"
+TOOLCHAIN_BINS="gcc g++ cc c++ make cmake go gofmt rustup rustc cargo java javac gradle mvn sbt ruby gem bundle php composer dotnet R Rscript"
 # The languages manifest Studio reads (polyglot only; slim ships none).
 MANIFEST=/usr/local/share/alissa/languages.json
 VARIANT="${LOOPWORK_VARIANT:-slim}"
@@ -90,10 +90,12 @@ case "$VARIANT" in
             check "slim has no ${b}"          sh -c "! command -v ${b}"
             check "slim has no ${b} (session)" gosu alissa bash -lc "! command -v ${b}"
         done
-        check "slim has no /opt toolchains" sh -c '! test -e /opt/go && ! test -e /opt/rust && ! test -e /opt/java && ! test -e /opt/gradle && ! test -e /opt/maven && ! test -e /opt/ruby && ! test -e /opt/dotnet'
+        check "slim has no /opt toolchains" sh -c '! test -e /opt/go && ! test -e /opt/rust && ! test -e /opt/java && ! test -e /opt/gradle && ! test -e /opt/maven && ! test -e /opt/ruby && ! test -e /opt/dotnet && ! test -e /opt/sbt'
         check "slim has no languages manifest" test ! -e "$MANIFEST"
         check "slim has no polyglot profile.d" test ! -e /etc/profile.d/loopwork-polyglot.sh
         check "slim has no sury apt source"    test ! -e /etc/apt/sources.list.d/sury-php.list
+        check "slim has no CRAN apt source"    test ! -e /etc/apt/sources.list.d/cran-r.list
+        check "slim has no sbt config/caches"  sh -c '! test -e /etc/sbt && ! test -e /home/alissa/.sbt && ! test -e /home/alissa/.cache/coursier'
         ;;
     polyglot)
         for b in $TOOLCHAIN_BINS clippy-driver rustfmt pkg-config; do
@@ -111,11 +113,18 @@ case "$VARIANT" in
         check "dotnet owned by alissa"   sh -c 'test "$(stat -c %U /opt/dotnet /opt/dotnet/sdk | sort -u)" = "alissa"'
         check "dotnet SDK is an LTS 10.x" gosu alissa bash -lc 'dotnet --version | grep -q "^10\."'
         check "dotnet telemetry off (session)" gosu alissa bash -lc 'test "$DOTNET_CLI_TELEMETRY_OPTOUT" = 1 && test "$DOTNET_ROOT" = /opt/dotnet'
+        check "sbt runs in the foreground"   grep -qx -- '--server' /etc/sbt/sbtopts
+        check "sbt caches owned by alissa"   sh -c 'test "$(find /home/alissa/.sbt /home/alissa/.cache -not -user alissa | wc -l)" = 0'
+        check "sbt boot pre-warmed"          sh -c 'ls -d /home/alissa/.sbt/boot/scala-*/org.scala-sbt/sbt/"$(gosu alissa bash -lc "sbt --script-version")"'
+        check "R is 4.5+ (session)"          gosu alissa bash -lc 'Rscript -e "stopifnot(getRversion() >= \"4.5.0\")"'
+        check "R has testthat + renv"        gosu alissa bash -lc 'Rscript -e "library(testthat); library(renv)"'
+        check "R site library writable by alissa" gosu alissa bash -lc 'Rscript -e "stopifnot(file.access(.libPaths()[1], 2) == 0)"'
+        check "R repo = pinned snapshot"     gosu alissa bash -lc 'Rscript -e "stopifnot(grepl(\"packagemanager.posit.co/cran/__linux__/\", getOption(\"repos\")[[\"CRAN\"]]))"'
         # The languages manifest: valid, exactly the expected ids, a version on
         # every entry, and each version equal to what the live tool reports.
         check "manifest is valid JSON"   jq -e . "$MANIFEST"
         check "manifest variant polyglot" sh -c "test \"\$(jq -r .variant '$MANIFEST')\" = polyglot"
-        check "manifest lists every language" sh -c "test \"\$(jq -r '[.languages[].id] | sort | join(\" \")' '$MANIFEST')\" = 'c cpp csharp go java javascript kotlin php python ruby rust'"
+        check "manifest lists every language" sh -c "test \"\$(jq -r '[.languages[].id] | sort | join(\" \")' '$MANIFEST')\" = 'c cpp csharp go java javascript kotlin php python r ruby rust scala'"
         check "manifest versions non-empty" jq -e '.languages | all(.version | type == "string" and length > 0)' "$MANIFEST"
         mver() { jq -r --arg id "$1" '.languages[] | select(.id == $id) | .version' "$MANIFEST"; }
         live() { gosu alissa bash -lc "$1" 2>/dev/null; }
@@ -126,12 +135,14 @@ case "$VARIANT" in
         check "manifest ruby = live"     test "$(mver ruby)"   = "$(live 'ruby -e "print RUBY_VERSION"')"
         check "manifest php = live"      test "$(mver php)"    = "$(live 'php -r "echo PHP_VERSION;"')"
         check "manifest csharp = live dotnet" test "$(mver csharp)" = "$(live 'dotnet --version')"
+        check "manifest scala = live sbt"  test "$(mver scala)"  = "$(live 'sbt --script-version')"
+        check "manifest r = live"          test "$(mver r)"      = "$(live 'Rscript -e "cat(format(getRversion()))"')"
         # Informational: what this build carries (README records these).
         echo "toolchains:"
         for cmd in "gcc --version" "cmake --version" "go version" "rustc --version" \
                    "cargo --version" "java -version" "gradle --version" "mvn --version" \
                    "ruby --version" "bundle --version" "php --version" "composer --version" \
-                   "dotnet --version"; do
+                   "dotnet --version" "sbt --script-version" "R --version"; do
             printf '  %-16s %s\n' "${cmd%% *}" "$(gosu alissa bash -lc "${cmd} 2>&1" | grep -m1 -E '[0-9]+\.[0-9]+' || echo unknown)"
         done
         echo "languages manifest:"

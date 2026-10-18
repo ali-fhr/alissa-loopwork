@@ -43,10 +43,10 @@
 #
 # Two variants, one Dockerfile (see "Polyglot variant" at the bottom and the
 # README): `slim` is the base described above and stays the default target;
-# `polyglot` = slim + C/C++, Go, Rust, Java/Kotlin, Ruby, PHP and .NET toolchains
-# (+ the languages manifest /usr/local/share/alissa/languages.json), published as
-# the `-polyglot` tags. The polyglot stages add layers on top of slim and never
-# change it.
+# `polyglot` = slim + C/C++, Go, Rust, Java/Kotlin, Scala (sbt), Ruby, PHP, .NET
+# and R toolchains (+ the languages manifest /usr/local/share/alissa/
+# languages.json), published as the `-polyglot` tags. The polyglot stages add
+# layers on top of slim and never change it.
 #
 # Versioning: bump the VERSION file (auto-tag + publish on merge, see
 # .github/workflows/release.yml) or push a git tag vX.Y.Z by hand — either way
@@ -97,6 +97,20 @@ ARG COMPOSER_SHA256=7a2d379d5b8ffdaa028580ef26494c36d2feef4b178d3dd1473a4dbc5e17
 ARG DOTNET_SDK_VERSION=10.0.402
 ARG DOTNET_SHA512_AMD64=1904a98dda2db34ba78ba3c4fb1b224455329af91c341d83547843c1839e112b04ae699ee92fa2449a8f62249196a938723078c0c60b9f65c88539d5687729c2
 ARG DOTNET_SHA512_ARM64=db85ae85527251fbb1290720ac3bf324bb1d9eea74516ef291ed4bb1f8ff6ec63a17593367f49b456115e8b24ead6d0c2ece2801e501f36a6cd4444ed01a498f
+# sbt — the runner tarball from github.com/sbt/sbt/releases (+ .sha256), on the
+# JDK above. The same version is pre-warmed into the alissa home (sbt boot +
+# coursier cache), so a project on this sbt starts without fetching sbt itself;
+# a project's Scala compiler and libraries (Spark included) resolve per project.
+ARG SBT_VERSION=2.0.10
+ARG SBT_SHA256=783fe0c278564e67fbd14ecaa9ace6b9433cf8ece0ad8f50ad436cb24622105c
+# R — r-base from CRAN's Debian repo (cloud.r-project.org, bookworm-cran40),
+# pinned to the exact package version; the repo key is pinned by fingerprint
+# (Johannes Ranke's CRAN Debian key). testthat + renv come from a DATED Posit
+# Package Manager snapshot (bookworm binaries), which also stays the default
+# CRAN repo for install.packages() in the image.
+ARG R_VERSION=4.5.3-1~bookwormcran.0
+ARG CRAN_KEY_FPR=95C0FAF38DB3CCAD0C080A7BDC78B2DDEABC47B7
+ARG CRAN_SNAPSHOT=https://packagemanager.posit.co/cran/__linux__/bookworm/2026-10-15
 
 # Base is pinned to python 3.12 (matches the daemon repos' .python-version);
 # Node 22 is layered on via NodeSource. The daemons need python >= 3.11; the
@@ -411,6 +425,45 @@ RUN set -eux; \
     mkdir -p /opt/dotnet; \
     tar -C /opt/dotnet -xzf dotnet.tgz
 
+# sbt runner in /opt/sbt (only the linux sbtn clients kept). /etc/sbt/sbtopts
+# makes `--server` the default: sbt 2.x otherwise runs the thin client and
+# leaves a background sbt server JVM behind every call — in an unattended seat
+# that is an orphan holding ~1 GB per project. `sbt --client` still opts in.
+FROM fetch AS sbt-fetch
+ARG SBT_VERSION
+ARG SBT_SHA256
+RUN set -eux; \
+    curl -fsSLo sbt.tgz "https://github.com/sbt/sbt/releases/download/v${SBT_VERSION}/sbt-${SBT_VERSION}.tgz"; \
+    echo "${SBT_SHA256}  sbt.tgz" | sha256sum -c -; \
+    mkdir -p /opt/sbt /etc/sbt; \
+    tar -C /opt/sbt --strip-components=1 -xzf sbt.tgz; \
+    rm /opt/sbt/bin/sbt.bat /opt/sbt/bin/sbtn-universal-apple-darwin /opt/sbt/bin/sbtn-x86_64-pc-win32.exe; \
+    printf '%s\n' '# loopwork polyglot: run sbt in the foreground (no background server).' '--server' \
+        > /etc/sbt/sbtopts
+
+# Pre-warm sbt itself: boot an empty build on the pinned sbt once, so the boot
+# dir (~/.sbt/boot: sbt + the Scala its build definitions use) and the coursier
+# cache of sbt's own artifacts ship in the image (≈ 200 MB) instead of being
+# fetched by every seat's first `sbt`. Run as root here; the final stage copies
+# both into the alissa home. Not kept: ~/.sbt/1.0 (an rt.jar extract of the JDK
+# that sbt regenerates in seconds) and ~/.cache/sbt (the warm-up build's outputs).
+FROM fetch AS sbt-warm
+ARG SBT_VERSION
+COPY --from=jdk-fetch /opt/java /opt/java
+COPY --from=sbt-fetch /opt/sbt  /opt/sbt
+COPY --from=sbt-fetch /etc/sbt  /etc/sbt
+ENV JAVA_HOME=/opt/java/temurin-21 \
+    PATH="/opt/java/temurin-21/bin:/opt/sbt/bin:${PATH}"
+RUN set -eux; \
+    mkdir -p /tmp/warm/project; \
+    cd /tmp/warm; \
+    echo "sbt.version=${SBT_VERSION}" > project/build.properties; \
+    sbt --batch -Dsbt.supershell=false about; \
+    mkdir -p /out/home/.sbt /out/home/.cache; \
+    mv /root/.sbt/boot /out/home/.sbt/boot; \
+    mv /root/.cache/coursier /out/home/.cache/coursier; \
+    find /out/home/.sbt/boot -name 'sbt.boot.lock' -delete
+
 FROM base AS polyglot
 # C / C++: gcc, g++, make (build-essential), cmake, pkg-config, gdb — from the
 # bookworm archive, so their versions move with Debian point releases (pinned
@@ -444,6 +497,46 @@ RUN set -eux; \
         "php${PHP_VERSION}-curl" "php${PHP_VERSION}-zip" unzip \
         libyaml-0-2 libicu72; \
     rm -rf /var/lib/apt/lists/*
+# R from CRAN's Debian repo: the key is fetched from keyserver.ubuntu.com and
+# accepted only if its primary fingerprint is the pinned one, then bound to this
+# one source (signed-by), like sury above. r-base (core + the recommended
+# packages) and r-base-dev (headers, gfortran, BLAS/LAPACK dev — what a CRAN
+# source package needs to compile) at the pinned version. testthat + renv are
+# installed from the dated PPM snapshot as bookworm binaries; install.packages
+# only WARNS on a failed package, hence the explicit requireNamespace check.
+# The site library is chowned to alissa (uid 1000) so `install.packages()` and
+# `renv::restore()` work without root, as for Ruby's gems. Rprofile.site makes
+# the snapshot the default repo and sends the User-Agent PPM needs to serve
+# Linux binaries instead of sources.
+ARG R_VERSION
+ARG CRAN_KEY_FPR
+ARG CRAN_SNAPSHOT
+RUN set -eux; \
+    export GNUPGHOME="$(mktemp -d)"; \
+    curl -fsSLo /tmp/cran.asc "https://keyserver.ubuntu.com/pks/lookup?op=get&search=0x${CRAN_KEY_FPR}"; \
+    fpr="$(gpg --batch --show-keys --with-colons /tmp/cran.asc | awk -F: '$1=="fpr"{print $10; exit}')"; \
+    [ "$fpr" = "${CRAN_KEY_FPR}" ] || { echo "CRAN key fingerprint mismatch: ${fpr}" >&2; exit 1; }; \
+    gpg --batch --dearmor < /tmp/cran.asc > /etc/apt/keyrings/cran-r.gpg; \
+    rm -rf "$GNUPGHOME" /tmp/cran.asc; \
+    chmod go+r /etc/apt/keyrings/cran-r.gpg; \
+    . /etc/os-release; \
+    echo "deb [signed-by=/etc/apt/keyrings/cran-r.gpg] https://cloud.r-project.org/bin/linux/debian ${VERSION_CODENAME}-cran40/" \
+        > /etc/apt/sources.list.d/cran-r.list; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends \
+        "r-base=${R_VERSION}" "r-base-core=${R_VERSION}" "r-base-dev=${R_VERSION}"; \
+    rm -rf /var/lib/apt/lists/*; \
+    printf '%s\n' \
+        '' \
+        '# loopwork polyglot: the pinned CRAN snapshot (PPM, bookworm binaries).' \
+        "options(repos = c(CRAN = \"${CRAN_SNAPSHOT}\"))" \
+        'options(HTTPUserAgent = sprintf("R/%s R (%s)", getRversion(), paste(getRversion(), R.version["platform"], R.version["arch"], R.version["os"])))' \
+        >> /etc/R/Rprofile.site; \
+    mkdir -p /usr/local/lib/R/site-library; \
+    Rscript -e 'install.packages(c("testthat", "renv"), lib = "/usr/local/lib/R/site-library", Ncpus = parallel::detectCores())' \
+        -e 'for (p in c("testthat", "renv")) if (!requireNamespace(p, quietly = TRUE)) stop("R package not installed: ", p)'; \
+    chown -R 1000:1000 /usr/local/lib/R/site-library; \
+    rm -rf /tmp/Rtmp* /root/.cache/R
 COPY --from=go-fetch     /opt/go     /opt/go
 COPY --from=jdk-fetch    /opt/java   /opt/java
 COPY --from=gradle-fetch /opt/gradle /opt/gradle
@@ -452,6 +545,9 @@ COPY --from=rust-fetch   --chown=1000:1000 /opt/rust /opt/rust
 COPY --from=ruby-build   --chown=1000:1000 /opt/ruby /opt/ruby
 COPY --from=dotnet-fetch --chown=1000:1000 /opt/dotnet /opt/dotnet
 COPY --from=composer-fetch /usr/local/bin/composer /usr/local/bin/composer
+COPY --from=sbt-fetch    /opt/sbt    /opt/sbt
+COPY --from=sbt-fetch    /etc/sbt    /etc/sbt
+COPY --from=sbt-warm     --chown=1000:1000 /out/home/ /home/alissa/
 
 # ENV covers non-login processes (docker exec, gosu, the daemon itself). Login
 # shells — what tmux starts for worker sessions — run Debian's /etc/profile,
@@ -460,8 +556,10 @@ COPY --from=composer-fetch /usr/local/bin/composer /usr/local/bin/composer
 # silently downloading a toolchain at test time. The DOTNET_* knobs keep the
 # SDK quiet for unattended sessions: no telemetry, no first-run banner, no
 # dev-cert generation. Per-user caches (NuGet's ~/.nuget/packages, Composer's
-# ~/.cache/composer, Bundler's ~/.bundle) live in the alissa home, off the
-# /workspace volume.
+# ~/.cache/composer, Bundler's ~/.bundle, sbt's ~/.sbt/boot + coursier's
+# ~/.cache/coursier — pre-warmed above —, renv's ~/.cache/R/renv) live in the
+# alissa home, off the /workspace volume. R needs no ENV: R/Rscript are in
+# /usr/bin and its site library is already on .libPaths().
 ENV JAVA_HOME=/opt/java/temurin-21 \
     GRADLE_HOME=/opt/gradle \
     MAVEN_HOME=/opt/maven \
@@ -472,7 +570,7 @@ ENV JAVA_HOME=/opt/java/temurin-21 \
     DOTNET_CLI_TELEMETRY_OPTOUT=1 \
     DOTNET_NOLOGO=1 \
     DOTNET_GENERATE_ASPNET_CERTIFICATE=false \
-    PATH="/opt/rust/cargo/bin:/opt/go/bin:/opt/java/temurin-21/bin:/opt/gradle/bin:/opt/maven/bin:/opt/ruby/bin:/opt/dotnet:${PATH}"
+    PATH="/opt/rust/cargo/bin:/opt/go/bin:/opt/java/temurin-21/bin:/opt/gradle/bin:/opt/maven/bin:/opt/sbt/bin:/opt/ruby/bin:/opt/dotnet:${PATH}"
 COPY <<'EOF' /etc/profile.d/loopwork-polyglot.sh
 # loopwork polyglot variant: toolchains on PATH for login shells (tmux sessions).
 export JAVA_HOME=/opt/java/temurin-21
@@ -487,7 +585,7 @@ export DOTNET_NOLOGO=1
 export DOTNET_GENERATE_ASPNET_CERTIFICATE=false
 case ":$PATH:" in
     *:/opt/go/bin:*) ;;
-    *) PATH="/opt/rust/cargo/bin:/opt/go/bin:/opt/java/temurin-21/bin:/opt/gradle/bin:/opt/maven/bin:/opt/ruby/bin:/opt/dotnet:$PATH" ;;
+    *) PATH="/opt/rust/cargo/bin:/opt/go/bin:/opt/java/temurin-21/bin:/opt/gradle/bin:/opt/maven/bin:/opt/sbt/bin:/opt/ruby/bin:/opt/dotnet:$PATH" ;;
 esac
 export PATH
 EOF
@@ -532,6 +630,10 @@ composer="$(req composer "$(COMPOSER_ALLOW_SUPERUSER=1 composer --version --no-a
 phpext="$(php -r 'echo json_encode(array_map("strtolower", get_loaded_extensions()));')"
 dotnet="$(req dotnet-sdk "$(dotnet --version)")"
 dotnetrt="$(req dotnet-runtime "$(dotnet --list-runtimes | awk '$1=="Microsoft.NETCore.App"{v=$2} END{print v}')")"
+sbt="$(req sbt "$(sbt --script-version)")"
+rver="$(req R "$(Rscript -e 'cat(format(getRversion()))')")"
+testthat="$(req testthat "$(Rscript -e 'cat(format(packageVersion("testthat")))')")"
+renv="$(req renv "$(Rscript -e 'cat(format(packageVersion("renv")))')")"
 jq -n \
     --arg python "$python" --arg pip "$pip" --arg node "$node" --arg npm "$npm" \
     --arg gcc "$gcc" --arg gxx "$gxx" --arg make "$make" --arg cmake "$cmake" \
@@ -540,6 +642,7 @@ jq -n \
     --arg ruby "$ruby" --arg gem "$gem" --arg bundler "$bundler" \
     --arg php "$php" --arg composer "$composer" --argjson phpext "$phpext" \
     --arg dotnet "$dotnet" --arg dotnetrt "$dotnetrt" \
+    --arg sbt "$sbt" --arg r "$rver" --arg testthat "$testthat" --arg renv "$renv" \
     '{
       schema: 1,
       image: "ghcr.io/ali-fhr/alissa-loopwork-base",
@@ -567,11 +670,16 @@ jq -n \
         {id: "php", name: "PHP", toolchain: "php-cli", version: $php,
          tools: {php: $php, composer: $composer}, extensions: $phpext},
         {id: "csharp", name: "C#", toolchain: "dotnet-sdk", version: $dotnet,
-         tools: {"dotnet-sdk": $dotnet, "dotnet-runtime": $dotnetrt}}
+         tools: {"dotnet-sdk": $dotnet, "dotnet-runtime": $dotnetrt}},
+        {id: "scala", name: "Scala", toolchain: "sbt", version: $sbt,
+         tools: {sbt: $sbt, jdk: $java},
+         note: "no scalac in the image: sbt resolves each project'"'"'s Scala (2.13 or 3) and libraries, Apache Spark included (local mode), per project"},
+        {id: "r", name: "R", toolchain: "r-base", version: $r,
+         tools: {R: $r, Rscript: $r}, packages: {testthat: $testthat, renv: $renv}}
       ]
     }' > /usr/local/share/alissa/languages.json
 chmod 0644 /usr/local/share/alissa/languages.json
-rm -rf /tmp/manifest-home /root/.m2 /root/.gradle /root/.dotnet /root/.nuget
+rm -rf /tmp/manifest-home /root/.m2 /root/.gradle /root/.dotnet /root/.nuget /root/.sbt /root/.cache
 cat /usr/local/share/alissa/languages.json
 EOF
 
