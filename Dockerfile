@@ -274,8 +274,24 @@ ENV PATH="/home/alissa/.local/bin:${PATH}"
 # SNAPSHOT_STAMP (declared above) is used here too, so this layer is never
 # served from the previous release's cache — that is the whole point of a
 # re-snapshot release.
+# The floor assertion right after the install fails the build when the served
+# bundle is older than ALISSA_CLI_MIN: an image must never again freeze a CLI
+# without the SIGHUP finalize fix (0.3.1 — before it, `alissa tmux kill` killed
+# the CLI before `finalize`, so loop sessions neither closed nor uploaded their
+# transcripts). Compared semver-wise via `sort -V`, not as strings.
+# ALISSA_CLI_MIN is a build arg only as a deliberate local override. No workflow
+# may pass a lower floor to turn a red build green; the fix for that red is
+# deploying a current CLI to share.alissa.app.
+ARG ALISSA_CLI_MIN=0.3.1
 RUN echo "snapshot ${SNAPSHOT_STAMP}: alissa CLI" \
-    && curl -fsSL https://share.alissa.app/install | bash
+    && curl -fsSL https://share.alissa.app/install | bash \
+    && ALISSA_VER="$(alissa --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)" \
+    && if [ -z "${ALISSA_VER}" ] \
+        || [ "$(printf '%s\n%s\n' "${ALISSA_CLI_MIN}" "${ALISSA_VER}" | sort -V | head -1)" != "${ALISSA_CLI_MIN}" ]; then \
+        echo "✗ alissa CLI ${ALISSA_VER:-<unreadable>} is older than ${ALISSA_CLI_MIN} (share.alissa.app/install served a stale bundle) — refusing to freeze a CLI without the SIGHUP finalize fix" >&2; \
+        exit 1; \
+    fi \
+    && echo "alissa CLI ${ALISSA_VER} >= ${ALISSA_CLI_MIN}"
 
 # --- claude first-run gates: pre-seed so the TUI starts READY, no human ------
 # A brand-new user hits claude's first-run dialogs (welcome/onboarding, theme
