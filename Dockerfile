@@ -279,6 +279,9 @@ ENV PATH="/home/alissa/.local/bin:${PATH}"
 # without the SIGHUP finalize fix (0.3.1 — before it, `alissa tmux kill` killed
 # the CLI before `finalize`, so loop sessions neither closed nor uploaded their
 # transcripts). Compared semver-wise via `sort -V`, not as strings.
+# ALISSA_CLI_MIN is a build arg only as a deliberate local override. No workflow
+# may pass a lower floor to turn a red build green; the fix for that red is
+# deploying a current CLI to share.alissa.app.
 ARG ALISSA_CLI_MIN=0.3.1
 RUN echo "snapshot ${SNAPSHOT_STAMP}: alissa CLI" \
     && curl -fsSL https://share.alissa.app/install | bash \
