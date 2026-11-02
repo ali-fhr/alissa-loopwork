@@ -375,6 +375,16 @@ Each entry records what the release's build snapshotted (the agent CLIs are
 unpinned, so the number is only known once the image is built — CI's smoke
 step prints them; see `tests/smoke.sh`).
 
+- **0.6.1** — re-snapshot for alissa CLI 0.3.1 (clean session close on tmux
+  kill, first transcript checkpoint at 60 s). Every seat ran a CLI frozen at
+  its base's build date (0.6.0, 0.2.3), all older than the SIGHUP forwarding
+  fix, so a loop's `alissa tmux kill` killed the CLI before `finalize` and the
+  session neither closed nor uploaded its transcript. Image-input change: the
+  build now asserts `alissa --version` ≥ 0.3.1 (`ALISSA_CLI_MIN`, compared
+  semver-wise) right after the install and fails otherwise, so an image can
+  never again freeze a CLI without that fix. Slim changes on purpose (PR
+  labelled `slim-change`). Agent CLIs re-snapshotted as of the build date. No
+  fleet rolled.
 - **0.6.0** — the base (slim, and so polyglot) gains a pinned **headless
   Chromium**: Playwright 1.64.1 + its chromium headless shell (Chrome for
   Testing 156.0.8078.4) and the libraries/fonts it needs, for the Alissa Build
