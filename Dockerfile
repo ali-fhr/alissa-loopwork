@@ -293,6 +293,23 @@ RUN echo "snapshot ${SNAPSHOT_STAMP}: alissa CLI" \
     fi \
     && echo "alissa CLI ${ALISSA_VER} >= ${ALISSA_CLI_MIN}"
 
+# Same shape and same rule for claude-code (installed unpinned in the agent-CLI
+# layer above): fail the build when `claude --version` is unreadable or older
+# than CLAUDE_CODE_MIN. 2.1.321 is the first release that knows Claude Fable 5.2
+# (`claude-fable-5-2`, what the `fable` alias resolves to) — a seat pinned to it
+# on an older claude fails the way 2.1.241 did for `claude-fable-5-1`.
+# CLAUDE_CODE_MIN is a build arg only as a deliberate local override. No workflow
+# may pass a lower floor to turn a red build green; the fix for that red is a
+# build that resolves a current @anthropic-ai/claude-code from npm.
+ARG CLAUDE_CODE_MIN=2.1.321
+RUN CLAUDE_VER="$(claude --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1)" \
+    && if [ -z "${CLAUDE_VER}" ] \
+        || [ "$(printf '%s\n%s\n' "${CLAUDE_CODE_MIN}" "${CLAUDE_VER}" | sort -V | head -1)" != "${CLAUDE_CODE_MIN}" ]; then \
+        echo "✗ claude-code ${CLAUDE_VER:-<unreadable>} is older than ${CLAUDE_CODE_MIN} (npm resolved a stale @anthropic-ai/claude-code) — refusing to freeze a claude that does not know claude-fable-5-2" >&2; \
+        exit 1; \
+    fi \
+    && echo "claude-code ${CLAUDE_VER} >= ${CLAUDE_CODE_MIN}"
+
 # --- claude first-run gates: pre-seed so the TUI starts READY, no human ------
 # A brand-new user hits claude's first-run dialogs (welcome/onboarding, theme
 # picker, and the one-time --dangerously-skip-permissions "bypass mode" warning)

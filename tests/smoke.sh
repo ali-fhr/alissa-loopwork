@@ -50,6 +50,14 @@ echo "versions: claude-code $(ver claude @anthropic-ai/claude-code) | codex $(ve
 # (the #6 blocker) or a stale share.alissa.app would fail here, in CI, before
 # anything is published. Drop or replace when a later release supersedes it.
 check "alissa CLI carries paste lead-in" grep -q pasteLeadIn "${ALISSA_BUNDLE}"
+# Release 0.6.2: the built image's claude-code is at or above the Dockerfile's
+# CLAUDE_CODE_MIN floor (2.1.321, first release that knows claude-fable-5-2).
+# The build already refuses an older one; this re-asserts it on the image that
+# CI smokes and publish gates on. Keep in step with CLAUDE_CODE_MIN.
+CLAUDE_CODE_MIN=2.1.321
+claude_ver="$(claude --version 2>/dev/null | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)"
+check "claude-code ${claude_ver:-<unreadable>} >= ${CLAUDE_CODE_MIN}" \
+    sh -c '[ -n "$1" ] && [ "$(printf "%s\n%s\n" "$2" "$1" | sort -V | head -1)" = "$2" ]' _ "${claude_ver}" "${CLAUDE_CODE_MIN}"
 
 # --- non-root user + workspace ----------------------------------------------
 check "alissa uid is 1000"        sh -c 'test "$(id -u alissa)" = "1000"'
