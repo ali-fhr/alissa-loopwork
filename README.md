@@ -375,6 +375,18 @@ Each entry records what the release's build snapshotted (the agent CLIs are
 unpinned, so the number is only known once the image is built — CI's smoke
 step prints them; see `tests/smoke.sh`).
 
+- **0.6.2** — re-snapshot for **claude-code 2.1.322** (Fable 5.2 aware:
+  2.1.321, published 2026-11-09, is the first release that knows
+  `claude-fable-5-2`, which the `fable` alias now resolves to). Every seat ran
+  claude-code 2.1.316 frozen by 0.6.1's build, so a seat pinned to `fable` or
+  `claude-fable-5-2` would fail the way 2.1.241 did for `claude-fable-5-1`.
+  Image-input change: the build now asserts `claude --version` ≥ 2.1.321
+  (`CLAUDE_CODE_MIN`, same shape and rule as `ALISSA_CLI_MIN` — a deliberate
+  local override only) and fails otherwise; the smoke re-asserts it on the
+  built image. Snapshotted alongside: codex 0.167.0, pi 0.73.1, alissa CLI
+  0.3.1 (bundle sha256 096a950bab28…). Slim changes on purpose (PR labelled
+  `slim-change`). No contract change (ENTRYPOINT, USER, WORKDIR, ENV skeleton
+  as 0.6.1). No seat's model changed, no fleet rolled.
 - **0.6.1** — re-snapshot for alissa CLI 0.3.1 (clean session close on tmux
   kill, first transcript checkpoint at 60 s). Every seat ran a CLI frozen at
   its base's build date (0.6.0, 0.2.3), all older than the SIGHUP forwarding
