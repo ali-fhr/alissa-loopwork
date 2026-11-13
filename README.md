@@ -45,6 +45,24 @@ by bumping one pinned base tag.
   `--disable-dev-shm-usage` for large pages: docker's `/dev/shm` is 64 MB).
   Pinned on purpose, unlike the agent CLIs: bump `PLAYWRIGHT_VERSION` in the
   Dockerfile to move the browser
+- **dependency-audit tools**, pinned, for security-review sessions (studio
+  `docs/design/alissa-security-review.md` §3.4: run `npm audit
+  --package-lock-only`, `pip-audit --disable-pip --no-deps` and `osv-scanner`
+  on copies of a PR's lockfiles, so a supply-chain finding carries a tool's
+  output):
+  - **osv-scanner 2.7.1** (`/usr/local/bin/osv-scanner`) — the official
+    GitHub release binary, sha256-verified per architecture (amd64/arm64) at
+    build time; a mismatch fails the build
+  - **pip-audit 2.10.1** — in its own venv `/opt/pip-audit` (root-owned) with
+    a symlink at `/usr/local/bin/pip-audit`, so its dependencies never touch
+    the system python or a session's environment. Point it at a lockfile
+    (`-r requirements.txt`): run bare, it audits its own venv
+  - neither is configured with credentials; at run time they reach only their
+    advisory databases (osv.dev; PyPI's JSON API). Both run in the build's
+    smoke step (`--version`, as uid 1000) and are recorded in the polyglot
+    languages manifest's `tools`. Bump `OSV_SCANNER_VERSION` (+ both
+    checksums) or `PIP_AUDIT_VERSION` in the Dockerfile — see "Bumping the
+    audit tools"
 - the **alissa CLI** on the `alissa` user's PATH (worker, tmux queue, tasks)
 - non-root **`alissa` user (uid 1000)** + `/workspace` mount point, with the
   start-as-root → entrypoint chowns the volume → gosu-drop contract
@@ -217,6 +235,7 @@ Node.js only.
   "schema": 1,
   "image": "ghcr.io/ali-fhr/alissa-loopwork-base",
   "variant": "polyglot",
+  "tools": {"osv-scanner": "2.7.1", "pip-audit": "2.10.1"},
   "languages": [
     {"id": "ruby", "name": "Ruby", "toolchain": "ruby", "version": "4.0.7",
      "tools": {"ruby": "4.0.7", "gem": "…", "bundler": "4.0.20"}},
@@ -236,6 +255,10 @@ Node.js only.
   `scala`'s toolchain is sbt (`tools`: `sbt`, `jdk`): sbt resolves each
   project's Scala and libraries, Spark included. `r` also carries
   `packages` (`testthat`, `renv` versions).
+- `tools` (since 0.7.0) records the base's pinned non-language tools —
+  `osv-scanner` and `pip-audit` — read from the installed binaries like
+  everything else. They are in slim too; slim has no manifest, so its build
+  log (the base stage's smoke) is where their versions show.
 - `schema` bumps only on an incompatible change; new languages and new keys
   are additive. Each release's notes carry the full manifest.
 
@@ -299,6 +322,21 @@ since 2026-03) — re-pin from the command above. When bumping sbt, bump
 `sbt.version` in `tests/polyglot/{scala,spark}/project/build.properties` with
 it (the pre-warmed boot only serves that version); Spark's Scala version
 (`tests/polyglot/spark/build.sbt`) follows Spark's own `scala.version`.
+
+### Bumping the audit tools
+
+`OSV_SCANNER_VERSION` + `OSV_SCANNER_SHA256_{AMD64,ARM64}` and
+`PIP_AUDIT_VERSION` sit in the base stage of the `Dockerfile` (in slim, so a
+bump changes slim: label the PR `slim-change`). Change osv-scanner's version
+and both checksums together; never `latest`.
+
+```sh
+# osv-scanner: latest release + the published sha256 of each linux binary
+curl -fsS https://api.github.com/repos/google/osv-scanner/releases/latest | jq -r .tag_name
+curl -fsSL https://github.com/google/osv-scanner/releases/download/v<ver>/osv-scanner_SHA256SUMS | grep -E 'linux_(amd64|arm64)$'
+# pip-audit: latest on PyPI
+curl -fsS https://pypi.org/pypi/pip-audit/json | jq -r .info.version
+```
 
 ## Building and testing locally
 
@@ -375,6 +413,17 @@ Each entry records what the release's build snapshotted (the agent CLIs are
 unpinned, so the number is only known once the image is built — CI's smoke
 step prints them; see `tests/smoke.sh`).
 
+- **0.7.0** — the base (slim, and so polyglot) gains pinned
+  **dependency-audit tools** for security-review sessions (studio
+  `docs/design/alissa-security-review.md` §3.4): **osv-scanner 2.7.1** (GitHub
+  release binary, sha256-verified per arch) and **pip-audit 2.10.1** (isolated
+  venv `/opt/pip-audit`, symlinked onto PATH). The build's smoke runs both
+  `--version` as uid 1000; the polyglot languages manifest gains a top-level
+  `tools` key with both versions (additive, `schema` stays 1). No credentials,
+  no config. Slim changes on purpose (PR labelled `slim-change`). No contract
+  change (ENTRYPOINT, USER, WORKDIR, ENV skeleton as 0.6.2). Agent CLIs
+  re-snapshotted as of the build date. No fleet rolled; consumers re-pin in
+  their own lanes.
 - **0.6.2** — re-snapshot for **claude-code 2.1.322** (Fable 5.2 aware:
   2.1.321, published 2026-11-09, is the first release that knows
   `claude-fable-5-2`, which the `fable` alias now resolves to). Every seat ran

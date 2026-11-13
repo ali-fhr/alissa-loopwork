@@ -24,6 +24,8 @@
 #   * python 3.12 + Node 22 + gh + git + tmux + tini + gosu (+ firewall tools)
 #   * a pinned headless Chromium (Playwright's chromium headless shell + the
 #     system libraries it needs), for headless screenshots
+#   * pinned dependency-audit tools for security review: osv-scanner (sha256-
+#     verified release binary) and pip-audit (isolated venv /opt/pip-audit)
 #   * the agent CLIs the worker can spawn — claude-code (+ first-run
 #     pre-seeding), codex, and pi — one image for all three
 #   * the alissa CLI (worker, tmux queue, tasks) on the `alissa` user's PATH
@@ -200,6 +202,48 @@ RUN set -eux; \
     ln -s "$shell" /usr/local/bin/chrome-headless-shell; \
     chown -R 1000:1000 "${PLAYWRIGHT_BROWSERS_PATH}"; \
     chrome-headless-shell --no-sandbox --version
+
+# --- Dependency-audit tools (security-review sessions) --------------------------
+# Security review runs `osv-scanner` and `pip-audit --disable-pip --no-deps` (next
+# to `npm audit --package-lock-only`) on COPIES of a PR's lockfiles (studio
+# docs/design/alissa-security-review.md §3.4), so a supply-chain finding carries
+# the tool's output, not the model's opinion. PINNED like Playwright, so this
+# sits above SNAPSHOT_STAMP and only a pin bump rebuilds it.
+#   * osv-scanner: the official GitHub release binary for this arch, sha256-
+#     verified per arch (a mismatch fails the build), at /usr/local/bin. Bump
+#     version AND both checksums together (README "Bumping the audit tools").
+#   * pip-audit: its own venv at /opt/pip-audit (root-owned, read-only to
+#     sessions) with a symlink on PATH, so its dependencies never touch the
+#     system python or a session's environment. Audit lockfiles with `-r`: run
+#     bare, pip-audit audits the environment it runs in — its own venv.
+# No credentials, no config: at run time they reach only their advisory
+# databases (osv.dev; PyPI's JSON API). The smoke at the end runs both as
+# uid 1000 (the `alissa` user) and prints their versions into the build log.
+ARG TARGETARCH
+ARG OSV_SCANNER_VERSION=2.7.1
+ARG OSV_SCANNER_SHA256_AMD64=fb7dab19a8bd9bbe5c3189f09d4b7ee1820c9553a23bac202648a56efd2f6ee8
+ARG OSV_SCANNER_SHA256_ARM64=983d22fbad9724514e3fcc6acc83b5fa64c5ffa6b0d9f510028f22c1b223ff81
+ARG PIP_AUDIT_VERSION=2.10.1
+RUN set -eux; \
+    arch="${TARGETARCH:-$(dpkg --print-architecture)}"; \
+    case "$arch" in \
+        amd64) sha="${OSV_SCANNER_SHA256_AMD64}" ;; \
+        arm64) sha="${OSV_SCANNER_SHA256_ARM64}" ;; \
+        *) echo "unsupported arch ${arch}" >&2; exit 1 ;; \
+    esac; \
+    curl -fsSLo /tmp/osv-scanner \
+        "https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}/osv-scanner_linux_${arch}"; \
+    echo "${sha}  /tmp/osv-scanner" | sha256sum -c -; \
+    install -m 0755 /tmp/osv-scanner /usr/local/bin/osv-scanner; \
+    rm -f /tmp/osv-scanner; \
+    python3 -m venv /opt/pip-audit; \
+    /opt/pip-audit/bin/pip install --no-cache-dir "pip-audit==${PIP_AUDIT_VERSION}"; \
+    ln -s /opt/pip-audit/bin/pip-audit /usr/local/bin/pip-audit; \
+    # smoke: uid 1000 is the `alissa` user created further down (not yet in passwd)
+    gosu 1000:1000 env HOME=/tmp osv-scanner --version; \
+    gosu 1000:1000 env HOME=/tmp pip-audit --version; \
+    osv-scanner --version | grep -qx "osv-scanner version: ${OSV_SCANNER_VERSION}"; \
+    pip-audit --version | grep -qx "pip-audit ${PIP_AUDIT_VERSION}"
 
 # --- Agent CLIs (what the worker can spawn) -----------------------------------
 # One image, three agents:
@@ -681,6 +725,9 @@ EOF
 # from the image; a tool that does not answer fails the build. The slim image
 # ships no manifest (its content stays exactly the base stage): absent manifest
 # = slim = python + node only. Schema: README "The languages manifest".
+# Its top-level `tools` records the base's pinned dependency-audit tools
+# (osv-scanner, pip-audit) — additive, schema stays 1; on slim, which has no
+# manifest, their versions are in the build log of the base stage's smoke.
 # HOME is a throwaway dir so probing gradle/dotnet/composer leaves no root state.
 RUN <<'EOF'
 set -eu
@@ -717,6 +764,8 @@ sbt="$(req sbt "$(sbt --script-version)")"
 rver="$(req R "$(Rscript -e 'cat(format(getRversion()))')")"
 testthat="$(req testthat "$(Rscript -e 'cat(format(packageVersion("testthat")))')")"
 renv="$(req renv "$(Rscript -e 'cat(format(packageVersion("renv")))')")"
+osv="$(req osv-scanner "$(osv-scanner --version | sed -n 's/^osv-scanner version: //p')")"
+pipaudit="$(req pip-audit "$(pip-audit --version | sed -n 's/^pip-audit //p')")"
 jq -n \
     --arg python "$python" --arg pip "$pip" --arg node "$node" --arg npm "$npm" \
     --arg gcc "$gcc" --arg gxx "$gxx" --arg make "$make" --arg cmake "$cmake" \
@@ -726,10 +775,12 @@ jq -n \
     --arg php "$php" --arg composer "$composer" --argjson phpext "$phpext" \
     --arg dotnet "$dotnet" --arg dotnetrt "$dotnetrt" \
     --arg sbt "$sbt" --arg r "$rver" --arg testthat "$testthat" --arg renv "$renv" \
+    --arg osv "$osv" --arg pipaudit "$pipaudit" \
     '{
       schema: 1,
       image: "ghcr.io/ali-fhr/alissa-loopwork-base",
       variant: "polyglot",
+      tools: {"osv-scanner": $osv, "pip-audit": $pipaudit},
       languages: [
         {id: "python", name: "Python", toolchain: "cpython", version: $python,
          tools: {python: $python, pip: $pip}},
