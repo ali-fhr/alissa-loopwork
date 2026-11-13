@@ -130,6 +130,33 @@ done
 echo "browser: $(gosu alissa bash -lc 'chrome-headless-shell --version' 2>/dev/null || echo unknown) | playwright $(gosu alissa bash -lc 'playwright --version' 2>/dev/null | awk '{print $2}' || echo unknown)"
 case "$SHOTS" in /tmp/browser-smoke.*) rm -rf "$SHOTS" ;; esac
 
+# --- dependency-audit tools (security-review sessions) -------------------------
+# The build's own smoke runs both once, as uid 1000, right after installing them;
+# this re-asserts them on the FINAL image (a later layer or leaf stage could
+# shadow PATH or the venv's python), as alissa in a LOGIN shell — the PATH a
+# tmux-spawned session sees. Offline: --version, pip check and file reads only.
+osv_live="$(gosu alissa bash -lc 'osv-scanner --version' 2>/dev/null | sed -n 's/^osv-scanner version: //p')"
+pipaudit_live="$(gosu alissa bash -lc 'pip-audit --version' 2>/dev/null | sed -n 's/^pip-audit //p')"
+check "osv-scanner runs (session)"   test -n "${osv_live}"
+check "pip-audit runs (session)"     test -n "${pipaudit_live}"
+check "osv-scanner is the pinned binary (session)" \
+    test "$(gosu alissa bash -lc 'command -v osv-scanner')" = /usr/local/bin/osv-scanner
+check "pip-audit is the venv's (session)" \
+    test "$(readlink -f "$(gosu alissa bash -lc 'command -v pip-audit')")" = /opt/pip-audit/bin/pip-audit
+check "pip-audit runs on the venv's python" \
+    sh -c 'head -1 /opt/pip-audit/bin/pip-audit | grep -qx "#!/opt/pip-audit/bin/python[0-9.]*"'
+check "pip-audit venv root-owned"    sh -c 'test "$(find /opt/pip-audit -not -user root | wc -l)" = 0'
+check "pip-audit venv read-only to alissa" gosu alissa sh -c '! test -w /opt/pip-audit/lib && ! test -w /opt/pip-audit/bin'
+check "pip-audit stays out of the system python" sh -c '! python3 -c "import pip_audit"'
+check "pip-audit venv deps consistent" /opt/pip-audit/bin/pip check --disable-pip-version-check
+# The venv holds exactly the hash-locked closure (requirements/pip-audit.txt,
+# shipped at /opt/pip-audit/requirements.txt): same names, same versions.
+norm() { awk -F'==' '{n = tolower($1); gsub(/[-_.]+/, "-", n); print n "==" $2}'; }  # PEP 503 names
+locked="$(grep -E '^[A-Za-z0-9]' /opt/pip-audit/requirements.txt 2>/dev/null | awk '{print $1}' | sed 's/\[[^]]*\]//' | norm | sort)"
+frozen="$(/opt/pip-audit/bin/pip freeze --all --disable-pip-version-check 2>/dev/null | norm | sort)"
+check "pip-audit venv = hash lock"   sh -c '[ -n "$1" ] && [ "$1" = "$2" ]' _ "${locked}" "${frozen}"
+echo "audit tools: osv-scanner ${osv_live:-unknown} | pip-audit ${pipaudit_live:-unknown} ($(echo "${locked}" | grep -c . || true) locked dists)"
+
 # --- variant: slim stays lean, polyglot carries its toolchains -------------------
 # LOOPWORK_VARIANT is passed by tests/run.sh / the workflows (default: slim, so a
 # bare run asserts the slim contract). Checked in the alissa user's LOGIN shell
@@ -193,6 +220,11 @@ case "$VARIANT" in
         check "manifest csharp = live dotnet" test "$(mver csharp)" = "$(live 'dotnet --version')"
         check "manifest scala = live sbt"  test "$(mver scala)"  = "$(live 'sbt --script-version')"
         check "manifest r = live"          test "$(mver r)"      = "$(live 'Rscript -e "cat(format(getRversion()))"')"
+        # Its top-level `tools` (the base's audit tools): exactly these keys,
+        # each equal to the live binary's version (read as alissa, above).
+        check "manifest tools = osv-scanner pip-audit" sh -c "test \"\$(jq -r '.tools | keys | join(\" \")' '$MANIFEST')\" = 'osv-scanner pip-audit'"
+        check "manifest tools.osv-scanner = live" test "$(jq -r '.tools["osv-scanner"]' "$MANIFEST")" = "${osv_live}"
+        check "manifest tools.pip-audit = live"   test "$(jq -r '.tools["pip-audit"]' "$MANIFEST")" = "${pipaudit_live}"
         # Informational: what this build carries (README records these).
         echo "toolchains:"
         for cmd in "gcc --version" "cmake --version" "go version" "rustc --version" \

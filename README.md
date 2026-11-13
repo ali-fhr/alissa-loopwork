@@ -55,12 +55,18 @@ by bumping one pinned base tag.
     build time; a mismatch fails the build
   - **pip-audit 2.10.1** — in its own venv `/opt/pip-audit` (root-owned) with
     a symlink at `/usr/local/bin/pip-audit`, so its dependencies never touch
-    the system python or a session's environment. Point it at a lockfile
+    the system python or a session's environment. Installed from a
+    **hash-locked** closure, `requirements/pip-audit.txt` (every transitive
+    dependency and pip itself, sha256 per file, wheels only, `pip install
+    --require-hashes`), shipped in the image at
+    `/opt/pip-audit/requirements.txt`. Point it at a lockfile
     (`-r requirements.txt`): run bare, it audits its own venv
   - neither is configured with credentials; at run time they reach only their
     advisory databases (osv.dev; PyPI's JSON API). Both run in the build's
     smoke step (`--version`, as uid 1000) and are recorded in the polyglot
-    languages manifest's `tools`. Bump `OSV_SCANNER_VERSION` (+ both
+    languages manifest's `tools`; `tests/smoke.sh` re-checks them on the
+    final image (as `alissa` in a login shell, the venv against its lock,
+    the manifest's `tools` against the live binaries). Bump `OSV_SCANNER_VERSION` (+ both
     checksums) or `PIP_AUDIT_VERSION` in the Dockerfile — see "Bumping the
     audit tools"
 - the **alissa CLI** on the `alissa` user's PATH (worker, tmux queue, tasks)
@@ -328,7 +334,25 @@ it (the pre-warmed boot only serves that version); Spark's Scala version
 `OSV_SCANNER_VERSION` + `OSV_SCANNER_SHA256_{AMD64,ARM64}` and
 `PIP_AUDIT_VERSION` sit in the base stage of the `Dockerfile` (in slim, so a
 bump changes slim: label the PR `slim-change`). Change osv-scanner's version
-and both checksums together; never `latest`.
+and both checksums together; never `latest`. pip-audit moves in two files: set
+the pin in `requirements/pip-audit.in` **and** `PIP_AUDIT_VERSION` (the build
+fails if the lock does not hold that version), then regenerate the hash lock
+with pip-tools under Python 3.12 — it records every file's hash, so the one
+lock serves amd64 and arm64:
+
+```sh
+pip-compile --generate-hashes --allow-unsafe --strip-extras --no-emit-index-url \
+    --output-file requirements/pip-audit.txt requirements/pip-audit.in
+# optional rehearsal without docker: every pin has a hashed cp312 wheel per arch
+for p in manylinux2014_x86_64 manylinux2014_aarch64; do
+    pip download --require-hashes --only-binary=:all: --no-deps --platform "$p" \
+        --python-version 3.12 --implementation cp --abi cp312 -d "/tmp/pa-$p" \
+        -r requirements/pip-audit.txt
+done
+```
+
+Re-run the `pip-compile` line without a version change to pick up patched
+transitive dependencies (a patch release).
 
 ```sh
 # osv-scanner: latest release + the published sha256 of each linux binary
@@ -413,6 +437,17 @@ Each entry records what the release's build snapshotted (the agent CLIs are
 unpinned, so the number is only known once the image is built — CI's smoke
 step prints them; see `tests/smoke.sh`).
 
+- **0.7.1** — follow-up to the review of 0.7.0 (#20): pip-audit's venv is
+  installed from a **hash-locked** closure (`requirements/pip-audit.txt`,
+  `pip install --require-hashes --only-binary=:all:`; pip-audit 2.10.1 + 28
+  pinned dists incl. pip 26.3), so no unverified fetch is left in the audit
+  tools block. `tests/smoke.sh` now checks osv-scanner and pip-audit on the
+  final slim and polyglot images (as `alissa`, login shell; venv = lock;
+  manifest `tools` = live binaries). CI gains a native **linux/arm64** slim
+  build + smoke, so the base stage's arm64 paths (osv-scanner's arm64
+  checksum) are exercised; publishing stays linux/amd64. Slim changes on
+  purpose (PR labelled `slim-change`). No contract change. Agent CLIs
+  re-snapshotted as of the build date.
 - **0.7.0** — the base (slim, and so polyglot) gains pinned
   **dependency-audit tools** for security-review sessions (studio
   `docs/design/alissa-security-review.md` §3.4): **osv-scanner 2.7.1** (GitHub

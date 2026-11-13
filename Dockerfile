@@ -216,6 +216,13 @@ RUN set -eux; \
 #     sessions) with a symlink on PATH, so its dependencies never touch the
 #     system python or a session's environment. Audit lockfiles with `-r`: run
 #     bare, pip-audit audits the environment it runs in — its own venv.
+#     Installed from requirements/pip-audit.txt, the HASH-LOCKED closure of
+#     pip-audit==PIP_AUDIT_VERSION (every transitive dep and pip itself, sha256
+#     per file, wheels only so no unhashed build backend is fetched): any file
+#     PyPI serves that is not in the lock fails the build. The lock ships at
+#     /opt/pip-audit/requirements.txt, and tests/smoke.sh checks the venv
+#     against it. Regenerate it with PIP_AUDIT_VERSION (README "Bumping the
+#     audit tools").
 # No credentials, no config: at run time they reach only their advisory
 # databases (osv.dev; PyPI's JSON API). The smoke at the end runs both as
 # uid 1000 (the `alissa` user) and prints their versions into the build log.
@@ -224,6 +231,7 @@ ARG OSV_SCANNER_VERSION=2.7.1
 ARG OSV_SCANNER_SHA256_AMD64=fb7dab19a8bd9bbe5c3189f09d4b7ee1820c9553a23bac202648a56efd2f6ee8
 ARG OSV_SCANNER_SHA256_ARM64=983d22fbad9724514e3fcc6acc83b5fa64c5ffa6b0d9f510028f22c1b223ff81
 ARG PIP_AUDIT_VERSION=2.10.1
+COPY requirements/pip-audit.txt /opt/pip-audit/requirements.txt
 RUN set -eux; \
     arch="${TARGETARCH:-$(dpkg --print-architecture)}"; \
     case "$arch" in \
@@ -237,7 +245,12 @@ RUN set -eux; \
     install -m 0755 /tmp/osv-scanner /usr/local/bin/osv-scanner; \
     rm -f /tmp/osv-scanner; \
     python3 -m venv /opt/pip-audit; \
-    /opt/pip-audit/bin/pip install --no-cache-dir "pip-audit==${PIP_AUDIT_VERSION}"; \
+    grep -q "^pip-audit==${PIP_AUDIT_VERSION} " /opt/pip-audit/requirements.txt \
+        || { echo "requirements/pip-audit.txt does not lock pip-audit==${PIP_AUDIT_VERSION}" >&2; exit 1; }; \
+    /opt/pip-audit/bin/pip install --no-cache-dir --disable-pip-version-check \
+        --require-hashes --only-binary=:all: --no-deps \
+        -r /opt/pip-audit/requirements.txt; \
+    /opt/pip-audit/bin/pip check; \
     ln -s /opt/pip-audit/bin/pip-audit /usr/local/bin/pip-audit; \
     # smoke: uid 1000 is the `alissa` user created further down (not yet in passwd)
     gosu 1000:1000 env HOME=/tmp osv-scanner --version; \
