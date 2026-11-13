@@ -1,0 +1,5 @@
+# Top-level pin for the base image's pip-audit venv (/opt/pip-audit). The
+# hash-locked closure the Dockerfile installs is requirements/pip-audit.txt —
+# regenerate it from this file (README "Bumping the audit tools"); never edit
+# the .txt by hand.
+pip-audit==2.10.1

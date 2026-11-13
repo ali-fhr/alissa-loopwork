@@ -4,6 +4,10 @@
 # and the assertions that slim stays byte-identical (polyglot = slim + layers;
 # on PRs, slim = the base branch's slim). No push — publishing happens via
 # release.yml / publish.yml.
+# A second job builds slim natively on linux/arm64 and runs the same offline
+# contract smoke there, so the Dockerfile's arm64 branches in the base stage
+# (osv-scanner's arm64 sha256 among them) are built and executed, not only
+# written. Publishing stays linux/amd64 (publish.yml).
 # PRs additionally get the version guard: a change to any image input MUST come
 # with a VERSION bump (that bump is what releases it on merge — see release.yml),
 # and a changed VERSION must not collide with an existing tag (which would merge
@@ -35,7 +39,7 @@ jobs:
           # those change the repo, not the image, and need no release. The
           # guard is one-directional: a VERSION-only PR stays legal (that is
           # how the unpinned agent CLIs get re-snapshotted).
-          IMAGE_INPUTS='^(Dockerfile|entrypoint-stub\.sh)$'
+          IMAGE_INPUTS='^(Dockerfile|entrypoint-stub\.sh|requirements/pip-audit\.txt)$'
           CHANGED="$(git diff --name-only "origin/${{ github.base_ref }}...HEAD")"
           echo "changed files:"; echo "$CHANGED"
           if echo "$CHANGED" | grep -qE "$IMAGE_INPUTS" \
@@ -51,6 +55,46 @@ jobs:
             fi
           fi
           echo "version guard: OK"
+
+  # linux/arm64, natively (a GitHub-hosted arm runner — free for this public
+  # repo — not QEMU, which would put Playwright's browser install and the npm
+  # CLIs under emulation). Slim only: the base stage holds the arm64 code paths
+  # the review of #20 flagged as never built (osv-scanner's arm64 binary +
+  # checksum; the hash-locked pip-audit venv's arm64 wheels). Not published —
+  # publish.yml ships linux/amd64; this job keeps the arm64 path from rotting.
+  build-and-smoke-arm64:
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Build slim (linux/arm64)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          target: slim
+          platforms: linux/arm64
+          build-args: |
+            SNAPSHOT_STAMP=${{ github.run_id }}
+          load: true
+          tags: alissa-loopwork-base:ci-arm64
+          cache-from: type=gha,scope=slim-arm64
+          cache-to: type=gha,scope=slim-arm64,mode=max
+
+      - name: Assert the image is linux/arm64
+        run: |
+          set -euo pipefail
+          a="$(docker image inspect -f '{{.Os}}/{{.Architecture}}' alissa-loopwork-base:ci-arm64)"
+          echo "image platform: $a"
+          test "$a" = linux/arm64 || { echo "::error::expected linux/arm64, got $a"; exit 1; }
+
+      - name: Smoke test (slim, linux/arm64)
+        run: >
+          docker run --rm --entrypoint /bin/bash
+          -e LOOPWORK_VARIANT=slim
+          -v "$PWD/tests/smoke.sh:/smoke.sh:ro"
+          alissa-loopwork-base:ci-arm64 /smoke.sh
 
   # Both variants in ONE job, slim first: the polyglot build then reuses slim's
   # layers from this builder's local cache (same SNAPSHOT_STAMP), so polyglot is
